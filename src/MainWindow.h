@@ -3,11 +3,13 @@
 #include <QTabWidget>
 #include <QTableWidget>
 #include <QProgressBar>
+#include <QTreeWidget>
 #include <QPushButton>
 #include <QComboBox>
 #include <QCheckBox>
 #include <QLabel>
 #include <QLineEdit>
+#include "NtfsRecovery.h"
 
 enum class ShredState {
     Running,
@@ -42,8 +44,16 @@ private slots:
     // Browser Cleaner
     void cleanBrowserData();
 
+    // File Recovery Context Menu
+    void showRecoveryContextMenu(const QPoint& pos);
+
+    // Programs Context Menu
+    void showProgramsContextMenu(const QPoint& pos);
+
 private:
     void setupUi();
+    void populateRecoveryTree();
+    bool filterTreeItem(QTreeWidgetItem* item, const QString& filter);
     
     QTabWidget* tabWidget;
     QProgressBar* progressBar;
@@ -66,6 +76,7 @@ private:
     QPushButton* btnPauseShred;
     QPushButton* btnCancelShred;
     QComboBox* comboDrives;
+    QComboBox* comboWipeMode;
     QPushButton* btnWipeFreeSpace;
     QPushButton* btnPauseWipe;
     QPushButton* btnCancelWipe;
@@ -81,4 +92,19 @@ private:
     QCheckBox* chkCookies;
     QCheckBox* chkCache;
     QPushButton* btnCleanBrowsers;
+
+    // Tab 4: File Recovery
+    QComboBox* comboRecoveryDrives;
+    QPushButton* btnScanDrive;
+    QLineEdit* searchRecoveryBox;
+    QTreeWidget* recoveryTree;
+    QPushButton* btnRecoverSelected;
+    
+    QList<RecoverableFile> m_recoverableFiles;
+
+private slots:
+    // File Recovery
+    void scanRecoveryDrive();
+    void recoverSelectedFile();
+    void filterRecoveryFiles(const QString& text);
 };

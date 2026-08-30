@@ -4,9 +4,15 @@
 #include <functional>
 
 enum class ShredPass {
+    Pass_0 = 0, // Fast delete, no overwrite (MFT/table only)
     Pass_1 = 1,
     Pass_3 = 3, // DoD 5220.22-M
     Pass_7 = 7  // Simplified Gutmann
+};
+
+enum class WipeMode {
+    FullWipe = 0,
+    MftOnly = 1
 };
 
 class FileShredder {
@@ -19,7 +25,7 @@ public:
     static int shredPath(const QString& path, ShredPass passes, std::function<void(int, const QString&)> progressCallback = nullptr, std::function<bool()> cancelCheck = nullptr);
 
     // Wipes free space on the given drive letter (e.g., "C:\\")
-    static bool wipeFreeSpace(const QString& drivePath, std::function<void(int)> progressCallback = nullptr, std::function<bool()> cancelCheck = nullptr);
+    static bool wipeFreeSpace(const QString& drivePath, WipeMode mode, std::function<void(int)> progressCallback = nullptr, std::function<bool()> cancelCheck = nullptr);
 
     // Checks if the drive containing the given path is an SSD
     static bool isDriveSSD(const QString& path);

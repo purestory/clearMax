@@ -24,6 +24,9 @@ set(SOURCES
     src/RegistryMgr.h
     src/BrowserCleaner.cpp
     src/BrowserCleaner.h
+    src/NtfsRecovery.cpp
+    src/NtfsRecovery.h
+    src/FatRecovery.cpp
     clearMax.rc
 )
 

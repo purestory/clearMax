@@ -4,6 +4,7 @@
 #include <QProcess>
 #include <QDebug>
 #include <QFileInfo>
+#include <QThread>
 #include <Shlwapi.h>
 
 QString RegistryMgr::getRegString(HKEY key, const QString& valueName) {
@@ -147,7 +148,7 @@ QList<ProgramInfo> RegistryMgr::getInstalledPrograms() {
     return uniquePrograms;
 }
 
-bool RegistryMgr::uninstallProgram(const ProgramInfo& info) {
+bool RegistryMgr::uninstallProgram(const ProgramInfo& info, std::function<void()> onFinished) {
     if (info.uninstallString.isEmpty()) return false;
     
     std::wstring cmdW = info.uninstallString.toStdWString();
@@ -176,8 +177,18 @@ bool RegistryMgr::uninstallProgram(const ProgramInfo& info) {
     );
 
     if (success) {
-        CloseHandle(pi.hProcess);
         CloseHandle(pi.hThread);
+        
+        QThread* waitThread = QThread::create([hProcess = pi.hProcess, onFinished]() {
+            WaitForSingleObject(hProcess, INFINITE);
+            CloseHandle(hProcess);
+            if (onFinished) {
+                onFinished();
+            }
+        });
+        
+        QObject::connect(waitThread, &QThread::finished, waitThread, &QObject::deleteLater);
+        waitThread->start();
     }
     return success;
 }

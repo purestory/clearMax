@@ -2,6 +2,8 @@
 #include "RegistryMgr.h"
 #include "FileShredder.h"
 #include "BrowserCleaner.h"
+#include "NtfsRecovery.h"
+#include "FatRecovery.h"
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -13,6 +15,47 @@
 #include <QFileIconProvider>
 #include <QElapsedTimer>
 #include <QThread>
+#include <QMenu>
+#include <QStyle>
+#include <QDesktopServices>
+#include <QUrl>
+#include <QHeaderView>
+#include <windows.h>
+
+class SortTreeItem : public QTreeWidgetItem {
+public:
+    SortTreeItem(const QStringList& strings) : QTreeWidgetItem(strings) {}
+    bool operator<(const QTreeWidgetItem &other) const override {
+        int column = treeWidget() ? treeWidget()->sortColumn() : 0;
+        bool asc = treeWidget() ? (treeWidget()->header()->sortIndicatorOrder() == Qt::AscendingOrder) : true;
+        
+        if (column == 0) {
+            bool isUnknown1 = (text(0) == "Unknown Folders");
+            bool isUnknown2 = (other.text(0) == "Unknown Folders");
+            
+            if (isUnknown1 && !isUnknown2) return asc ? false : true; 
+            if (!isUnknown1 && isUnknown2) return asc ? true : false;  
+            
+            // Folders always on top
+            bool isFolder1 = !data(0, Qt::UserRole).isValid();
+            bool isFolder2 = !other.data(0, Qt::UserRole).isValid();
+            if (isFolder1 != isFolder2) {
+                return asc ? isFolder1 : !isFolder1;
+            }
+        }
+        
+        if (column == 2) { // Size column (numeric sort)
+            bool ok1, ok2;
+            qint64 size1 = text(2).toLongLong(&ok1);
+            qint64 size2 = other.text(2).toLongLong(&ok2);
+            if (ok1 && ok2) {
+                return size1 < size2;
+            }
+        }
+        
+        return QTreeWidgetItem::operator<(other);
+    }
+};
 
 MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     setWindowTitle("ClearMax - Ultimate PC Cleaner & Shredder");
@@ -62,6 +105,7 @@ void MainWindow::setupUi() {
     programsTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     programsTable->setSelectionMode(QAbstractItemView::SingleSelection);
     programsTable->setSortingEnabled(true); // Enable sorting when header is clicked
+    programsTable->setContextMenuPolicy(Qt::CustomContextMenu);
     layoutPrograms->addWidget(programsTable);
     
     QHBoxLayout* layoutProgramBtns = new QHBoxLayout();
@@ -81,6 +125,12 @@ void MainWindow::setupUi() {
     connect(btnUninstall, &QPushButton::clicked, this, &MainWindow::uninstallSelected);
     connect(btnForceRemove, &QPushButton::clicked, this, &MainWindow::forceRemoveSelected);
     connect(searchBox, &QLineEdit::textChanged, this, &MainWindow::filterPrograms);
+    connect(programsTable, &QTableWidget::itemSelectionChanged, this, [this]() {
+        bool hasSelection = programsTable->selectedItems().count() > 0;
+        btnUninstall->setEnabled(hasSelection);
+        btnForceRemove->setEnabled(hasSelection);
+    });
+    connect(programsTable, &QTableWidget::customContextMenuRequested, this, &MainWindow::showProgramsContextMenu);
 
     // --- Tab 2: File Shredder ---
     QWidget* tabShredder = new QWidget();
@@ -100,6 +150,7 @@ void MainWindow::setupUi() {
     QHBoxLayout* passLayout = new QHBoxLayout();
     passLayout->addWidget(new QLabel("Security Level:"));
     comboPasses = new QComboBox();
+    comboPasses->addItem("0-Pass (Fast Delete/SSD)", QVariant(static_cast<int>(ShredPass::Pass_0)));
     comboPasses->addItem("1-Pass (Quick)", QVariant(static_cast<int>(ShredPass::Pass_1)));
     comboPasses->addItem("3-Pass (DoD 5220.22-M)", QVariant(static_cast<int>(ShredPass::Pass_3)));
     comboPasses->addItem("7-Pass (Secure)", QVariant(static_cast<int>(ShredPass::Pass_7)));
@@ -135,6 +186,15 @@ void MainWindow::setupUi() {
     wipeLayout->addWidget(comboDrives);
     wipeLayout->addStretch();
     layoutShredder->addLayout(wipeLayout);
+    
+    QHBoxLayout* wipeModeLayout = new QHBoxLayout();
+    wipeModeLayout->addWidget(new QLabel("Wipe Mode:"));
+    comboWipeMode = new QComboBox();
+    comboWipeMode->addItem("MFT (Table) Only - SSD Recommended", QVariant(static_cast<int>(WipeMode::MftOnly)));
+    comboWipeMode->addItem("Full Free Space & MFT Wipe", QVariant(static_cast<int>(WipeMode::FullWipe)));
+    wipeModeLayout->addWidget(comboWipeMode);
+    wipeModeLayout->addStretch();
+    layoutShredder->addLayout(wipeModeLayout);
     
     btnWipeFreeSpace = new QPushButton("Wipe Free Space");
     layoutShredder->addWidget(btnWipeFreeSpace);
@@ -190,6 +250,58 @@ void MainWindow::setupUi() {
     tabWidget->addTab(tabBrowser, "Browser Cleaner");
     
     connect(btnCleanBrowsers, &QPushButton::clicked, this, &MainWindow::cleanBrowserData);
+
+    // --- Tab 4: File Recovery ---
+    QWidget* tabRecovery = new QWidget();
+    QVBoxLayout* layoutRecovery = new QVBoxLayout(tabRecovery);
+    
+    QHBoxLayout* recoveryTopLayout = new QHBoxLayout();
+    recoveryTopLayout->addWidget(new QLabel("Select Drive:"));
+    comboRecoveryDrives = new QComboBox();
+    for (const QStorageInfo &storage : QStorageInfo::mountedVolumes()) {
+        if (storage.isValid() && storage.isReady() && !storage.isReadOnly()) {
+            QString fs = storage.fileSystemType();
+            if (fs.compare("NTFS", Qt::CaseInsensitive) == 0 || fs.compare("FAT", Qt::CaseInsensitive) == 0 || fs.compare("FAT32", Qt::CaseInsensitive) == 0 || fs.compare("exFAT", Qt::CaseInsensitive) == 0) {
+                comboRecoveryDrives->addItem(storage.rootPath());
+            }
+        }
+    }
+    recoveryTopLayout->addWidget(comboRecoveryDrives);
+    btnScanDrive = new QPushButton("Scan for Deleted Files");
+    recoveryTopLayout->addWidget(btnScanDrive);
+    recoveryTopLayout->addStretch();
+    layoutRecovery->addLayout(recoveryTopLayout);
+    
+    QHBoxLayout* searchRecLayout = new QHBoxLayout();
+    searchRecLayout->addWidget(new QLabel("Search:"));
+    searchRecoveryBox = new QLineEdit();
+    searchRecoveryBox->setPlaceholderText("Type filename or extension to filter...");
+    searchRecLayout->addWidget(searchRecoveryBox);
+    layoutRecovery->addLayout(searchRecLayout);
+    
+    recoveryTree = new QTreeWidget();
+    recoveryTree->setColumnCount(4);
+    recoveryTree->setHeaderLabels({"Name", "Extension", "Size (Bytes)", "Recoverability"});
+    recoveryTree->header()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
+    recoveryTree->setSelectionBehavior(QAbstractItemView::SelectRows);
+    recoveryTree->setSelectionMode(QAbstractItemView::SingleSelection);
+    recoveryTree->setSortingEnabled(true);
+    recoveryTree->setContextMenuPolicy(Qt::CustomContextMenu);
+    layoutRecovery->addWidget(recoveryTree);
+    
+    btnRecoverSelected = new QPushButton("Recover Selected File");
+    btnRecoverSelected->setEnabled(false);
+    layoutRecovery->addWidget(btnRecoverSelected);
+    
+    tabWidget->addTab(tabRecovery, "File Recovery");
+    
+    connect(btnScanDrive, &QPushButton::clicked, this, &MainWindow::scanRecoveryDrive);
+    connect(btnRecoverSelected, &QPushButton::clicked, this, &MainWindow::recoverSelectedFile);
+    connect(searchRecoveryBox, &QLineEdit::textChanged, this, &MainWindow::filterRecoveryFiles);
+    connect(recoveryTree, &QTreeWidget::itemSelectionChanged, this, [this]() {
+        btnRecoverSelected->setEnabled(recoveryTree->selectedItems().count() > 0);
+    });
+    connect(recoveryTree, &QTreeWidget::customContextMenuRequested, this, &MainWindow::showRecoveryContextMenu);
 }
 
 void MainWindow::loadPrograms() {
@@ -291,7 +403,11 @@ void MainWindow::uninstallSelected() {
     
     ProgramInfo dummy;
     dummy.uninstallString = uninstallString;
-    RegistryMgr::uninstallProgram(dummy);
+    RegistryMgr::uninstallProgram(dummy, [this]() {
+        QMetaObject::invokeMethod(this, [this]() {
+            loadPrograms();
+        }, Qt::QueuedConnection);
+    });
 }
 
 void MainWindow::forceRemoveSelected() {
@@ -493,7 +609,8 @@ void MainWindow::wipeFreeSpace() {
                 return m_shredState == ShredState::Cancelled;
             };
             
-            bool success = FileShredder::wipeFreeSpace(currentDrive, progressCallback, cancelCheck);
+            WipeMode mode = static_cast<WipeMode>(comboWipeMode->currentData().toInt());
+            bool success = FileShredder::wipeFreeSpace(currentDrive, mode, progressCallback, cancelCheck);
             if (!success) {
                 allSuccess = false;
             }
@@ -562,4 +679,221 @@ void MainWindow::cleanBrowserData() {
         btnCleanBrowsers->setEnabled(true);
         QMessageBox::information(this, "Success", "Browser data securely shredded.");
     }
+}
+
+void MainWindow::scanRecoveryDrive() {
+    if (comboRecoveryDrives->currentIndex() == -1) return;
+    
+    btnScanDrive->setEnabled(false);
+    btnRecoverSelected->setEnabled(false);
+    recoveryTree->clear();
+    m_recoverableFiles.clear();
+        this->lblStatus->setText("Detecting file system...");
+    this->progressBar->setValue(0);
+    QApplication::processEvents();
+
+    QString drivePath = comboRecoveryDrives->currentText();
+    QString driveRoot = drivePath.left(3);
+    
+    wchar_t fsNameBuf[MAX_PATH];
+    GetVolumeInformationW(reinterpret_cast<const wchar_t*>(driveRoot.utf16()), NULL, 0, NULL, NULL, NULL, fsNameBuf, MAX_PATH);
+    QString fsName = QString::fromWCharArray(fsNameBuf);
+    
+    bool isFat = fsName.contains("FAT", Qt::CaseInsensitive); // Covers FAT, FAT32, exFAT
+    
+    QThread* thread = QThread::create([this, drivePath, isFat]() {
+        bool success = false;
+        
+        auto progressCallback = [this](int progress, const QString& statusMsg) {
+            QMetaObject::invokeMethod(this, [this, progress, statusMsg]() {
+                this->progressBar->setValue(progress);
+                this->lblStatus->setText(statusMsg);
+                QApplication::processEvents();
+            }, Qt::QueuedConnection);
+        };
+        
+        if (isFat) {
+            FatRecovery fat;
+            success = fat.scanDrive(drivePath, m_recoverableFiles, progressCallback);
+        } else {
+            NtfsRecovery ntfs;
+            success = ntfs.scanDrive(drivePath, m_recoverableFiles, progressCallback);
+        }
+        
+        QMetaObject::invokeMethod(this, [this, success]() {
+            if (success) {
+                populateRecoveryTree();
+                QMessageBox::information(this, "Scan Complete", QString("Found %1 deleted files.").arg(m_recoverableFiles.size()));
+                this->lblStatus->setText("Scan complete.");
+            } else {
+                QMessageBox::critical(this, "Scan Failed", "Failed to scan the drive. Ensure the program is running as Administrator.");
+                this->lblStatus->setText("Scan failed.");
+                this->progressBar->setValue(0);
+            }
+            this->btnScanDrive->setEnabled(true);
+        }, Qt::QueuedConnection);
+    });
+    
+    thread->start();
+}
+
+void MainWindow::populateRecoveryTree() {
+    recoveryTree->setSortingEnabled(false);
+    recoveryTree->clear();
+    
+    QHash<QString, QTreeWidgetItem*> folderNodes;
+    
+    for (int i = 0; i < m_recoverableFiles.size(); ++i) {
+        const RecoverableFile& rf = m_recoverableFiles[i];
+        
+        // Construct tree hierarchy
+        QStringList parts = rf.fullPath.split('/', Qt::SkipEmptyParts);
+        QTreeWidgetItem* parentItem = nullptr;
+        QString currentPath = "";
+        
+        for (const QString& part : parts) {
+            currentPath += "/" + part;
+            if (!folderNodes.contains(currentPath)) {
+                SortTreeItem* node = new SortTreeItem(QStringList() << part << "" << "" << "");
+                node->setIcon(0, QApplication::style()->standardIcon(QStyle::SP_DirIcon));
+                if (parentItem) {
+                    parentItem->addChild(node);
+                } else {
+                    recoveryTree->addTopLevelItem(node);
+                }
+                folderNodes.insert(currentPath, node);
+                parentItem = node;
+            } else {
+                parentItem = folderNodes.value(currentPath);
+            }
+        }
+        
+        SortTreeItem* fileItem = new SortTreeItem(QStringList() << rf.name << rf.extension << QString::number(rf.size) << rf.recoverability);
+        fileItem->setData(0, Qt::UserRole, i); // Store index
+        
+        if (rf.recoverability == "High") fileItem->setForeground(3, QBrush(Qt::darkGreen));
+        else if (rf.recoverability == "Low") fileItem->setForeground(3, QBrush(Qt::darkYellow));
+        else fileItem->setForeground(3, QBrush(Qt::red));
+        
+        if (parentItem) {
+            parentItem->addChild(fileItem);
+        } else {
+            recoveryTree->addTopLevelItem(fileItem);
+        }
+    }
+    
+    recoveryTree->setSortingEnabled(true);
+}
+
+bool MainWindow::filterTreeItem(QTreeWidgetItem* item, const QString& filter) {
+    bool isFolder = !item->data(0, Qt::UserRole).isValid();
+    bool match = false;
+    
+    if (isFolder) {
+        // A folder is visible if ANY of its children match
+        for (int i = 0; i < item->childCount(); ++i) {
+            if (filterTreeItem(item->child(i), filter)) {
+                match = true;
+            }
+        }
+        if (match && !filter.isEmpty()) {
+            item->setExpanded(true); // Auto-expand if a child matched the filter
+        } else if (filter.isEmpty()) {
+            item->setExpanded(false); // Collapse if filter cleared
+        }
+    } else {
+        // A file is visible if its name or extension matches the filter
+        if (filter.isEmpty()) {
+            match = true;
+        } else {
+            QString name = item->text(0).toLower();
+            QString ext = item->text(1).toLower();
+            match = name.contains(filter) || ext.contains(filter);
+        }
+    }
+    
+    item->setHidden(!match);
+    return match;
+}
+
+void MainWindow::filterRecoveryFiles(const QString& text) {
+    QString filter = text.toLower();
+    
+    for (int i = 0; i < recoveryTree->topLevelItemCount(); ++i) {
+        filterTreeItem(recoveryTree->topLevelItem(i), filter);
+    }
+}
+
+void MainWindow::recoverSelectedFile() {
+    QList<QTreeWidgetItem*> selected = recoveryTree->selectedItems();
+    if (selected.isEmpty()) return;
+    
+    QTreeWidgetItem* item = selected.first();
+    QVariant data = item->data(0, Qt::UserRole);
+    if (!data.isValid()) return; // Probably clicked a folder node
+    
+    int originalIndex = data.toInt();
+    if (originalIndex < 0 || originalIndex >= m_recoverableFiles.size()) return;
+    
+    const RecoverableFile& fileToRecover = m_recoverableFiles[originalIndex];
+    
+    QString savePath = QFileDialog::getSaveFileName(this, "Save Recovered File", fileToRecover.name);
+    if (savePath.isEmpty()) return;
+    
+    QString drivePath = comboRecoveryDrives->currentText();
+    QString driveRoot = drivePath.left(3);
+    char fsNameBuf[MAX_PATH];
+    GetVolumeInformationA(driveRoot.toStdString().c_str(), NULL, 0, NULL, NULL, NULL, fsNameBuf, MAX_PATH);
+    QString fsName = QString::fromLocal8Bit(fsNameBuf);
+    
+    bool isFat = fsName.contains("FAT");
+    bool success = false;
+    
+    if (isFat) {
+        FatRecovery fat;
+        success = fat.recoverFile(drivePath, fileToRecover, savePath);
+    } else {
+        NtfsRecovery ntfs;
+        success = ntfs.recoverFile(drivePath, fileToRecover, savePath);
+    }
+    
+    if (success) {
+    QMessageBox::information(this, "Success", "File successfully recovered to:\n" + savePath);
+    } else {
+        QMessageBox::critical(this, "Error", "Failed to recover the file. The data may have been partially or completely overwritten.");
+    }
+}
+
+void MainWindow::showRecoveryContextMenu(const QPoint& pos) {
+    QTreeWidgetItem* item = recoveryTree->itemAt(pos);
+    if (!item) return;
+    
+    // Only show context menu if it's a file, not a folder
+    if (!item->data(0, Qt::UserRole).isValid()) return;
+    
+    // Ensure the clicked item is selected
+    item->setSelected(true);
+    
+    QMenu menu(this);
+    QAction* recoverAction = menu.addAction(QApplication::style()->standardIcon(QStyle::SP_DriveFDIcon), "Recover Selected File");
+    connect(recoverAction, &QAction::triggered, this, &MainWindow::recoverSelectedFile);
+    
+    menu.exec(recoveryTree->viewport()->mapToGlobal(pos));
+}
+
+void MainWindow::showProgramsContextMenu(const QPoint& pos) {
+    QTableWidgetItem* item = programsTable->itemAt(pos);
+    if (!item) return;
+    
+    int row = item->row();
+    programsTable->selectRow(row);
+    
+    QMenu menu(this);
+    QAction* uninstallAction = menu.addAction(QApplication::style()->standardIcon(QStyle::SP_DialogCancelButton), "Uninstall");
+    QAction* forceRemoveAction = menu.addAction(QApplication::style()->standardIcon(QStyle::SP_TrashIcon), "Force Remove Registry Entry");
+    
+    connect(uninstallAction, &QAction::triggered, this, &MainWindow::uninstallSelected);
+    connect(forceRemoveAction, &QAction::triggered, this, &MainWindow::forceRemoveSelected);
+    
+    menu.exec(programsTable->viewport()->mapToGlobal(pos));
 }

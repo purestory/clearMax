@@ -3,6 +3,8 @@
 #include <QList>
 #include <windows.h>
 
+#include <functional>
+
 struct ProgramInfo {
     QString displayName;
     QString displayVersion;
@@ -20,7 +22,7 @@ public:
     static QList<ProgramInfo> getInstalledPrograms();
     
     // Normal uninstall via UninstallString
-    static bool uninstallProgram(const ProgramInfo& info);
+    static bool uninstallProgram(const ProgramInfo& info, std::function<void()> onFinished = nullptr);
     
     // Force remove registry key and attempt to shred remaining files in install location
     static bool forceRemoveProgram(const ProgramInfo& info);
