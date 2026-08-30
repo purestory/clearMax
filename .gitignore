@@ -1,0 +1,16 @@
+# Visual Studio
+.vs/
+*.user
+
+# Build directories
+build/
+out/
+
+# Portable packaging
+clearMax_Portable/
+*.zip
+
+# OS generated files
+.DS_Store
+Thumbs.db
+Desktop.ini
