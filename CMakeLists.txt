@@ -8,6 +8,11 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 add_compile_definitions(UNICODE _UNICODE)
 add_compile_options("/utf-8")
 
+# Statically link the C++ runtime (Use /MT instead of /MD) so no DLLs are required
+if(MSVC)
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+endif()
+
 # Source files
 set(SOURCES
     src/main.cpp
