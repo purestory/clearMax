@@ -1,110 +1,70 @@
 #pragma once
-#include <QMainWindow>
-#include <QTabWidget>
-#include <QTableWidget>
-#include <QProgressBar>
-#include <QTreeWidget>
-#include <QPushButton>
-#include <QComboBox>
-#include <QCheckBox>
-#include <QLabel>
-#include <QLineEdit>
-#include "NtfsRecovery.h"
+#include <windows.h>
+#include <commctrl.h>
+#include <string>
+#include <vector>
+#include <map>
+#include <algorithm>
+#include "resource.h"
+#include "RecoveryTypes.h"
+#include "RegistryMgr.h"
 
-enum class ShredState {
-    Running,
-    Paused,
-    Cancelled
-};
-
-class MainWindow : public QMainWindow {
-    Q_OBJECT
-
+class MainWindow {
 public:
-    MainWindow(QWidget *parent = nullptr);
+    MainWindow(HINSTANCE hInstance);
     ~MainWindow();
 
-private slots:
-    // Program Management
-    void loadPrograms();
-    void uninstallSelected();
-    void forceRemoveSelected();
-    void filterPrograms(const QString& text);
-    
-    // File Shredder
-    void browseFileToShred();
-    void browseFolderToShred();
-    void shredSelectedFile();
-    void wipeFreeSpace();
-    
-    // Operation Control
-    void pauseOperation();
-    void cancelOperation();
+    bool Initialize();
+    void Show();
+    HWND GetHWND() const { return m_hWnd; }
 
-    // Browser Cleaner
-    void cleanBrowserData();
-
-    // File Recovery Context Menu
-    void showRecoveryContextMenu(const QPoint& pos);
-
-    // Programs Context Menu
-    void showProgramsContextMenu(const QPoint& pos);
+    static INT_PTR CALLBACK ConfigDlgProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam);
 
 private:
-    void setupUi();
-    void populateRecoveryTree();
-    bool filterTreeItem(QTreeWidgetItem* item, const QString& filter);
+    HINSTANCE m_hInstance;
+    HWND m_hWnd;
+    HWND m_hTabControl;
+
+    // Tab Dialogs
+    HWND m_hTabPrograms;
+    HWND m_hTabShredder;
+    HWND m_hTabBrowser;
+    HWND m_hTabRecovery;
     
-    QTabWidget* tabWidget;
-    QProgressBar* progressBar;
-    QLabel* lblStatus; // Added for ETA and status messages
+    // Tab Data
+    std::vector<RecoverableFile> m_recoveredFiles;
+    std::vector<ProgramInfo> m_programs;
 
-    // Tab 1: Programs
-    QTableWidget* programsTable;
-    QPushButton* btnRefreshPrograms;
-    QPushButton* btnUninstall;
-    QPushButton* btnForceRemove;
-    QLineEdit* searchBox;
+    // Window Procedures
+    static INT_PTR CALLBACK MainDlgProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam);
+    static INT_PTR CALLBACK ProgramsDlgProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam);
+    static INT_PTR CALLBACK ShredderDlgProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam);
+    static INT_PTR CALLBACK BrowserDlgProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam);
+    static INT_PTR CALLBACK RecoveryDlgProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam);
 
-    // Tab 2: File Shredder
-    QLabel* lblSelectedFile;
-    QString currentFileToShred;
-    QPushButton* btnBrowseFile;
-    QPushButton* btnBrowseFolder;
-    QComboBox* comboPasses;
-    QPushButton* btnShred;
-    QPushButton* btnPauseShred;
-    QPushButton* btnCancelShred;
-    QComboBox* comboDrives;
-    QComboBox* comboWipeMode;
-    QPushButton* btnWipeFreeSpace;
-    QPushButton* btnPauseWipe;
-    QPushButton* btnCancelWipe;
+    // Instance Handlers
+    INT_PTR HandleMainMessage(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam);
+    INT_PTR HandleProgramsMessage(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam);
+    INT_PTR HandleShredderMessage(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam);
+    INT_PTR HandleBrowserMessage(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam);
+    INT_PTR HandleRecoveryMessage(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam);
 
-    // State
-    ShredState m_shredState;
-
-    // Tab 3: Browser Cleaner
-    QCheckBox* chkChrome;
-    QCheckBox* chkEdge;
-    QCheckBox* chkFirefox;
-    QCheckBox* chkHistory;
-    QCheckBox* chkCookies;
-    QCheckBox* chkCache;
-    QPushButton* btnCleanBrowsers;
-
-    // Tab 4: File Recovery
-    QComboBox* comboRecoveryDrives;
-    QPushButton* btnScanDrive;
-    QLineEdit* searchRecoveryBox;
-    QTreeWidget* recoveryTree;
-    QPushButton* btnRecoverSelected;
+    // Helpers
+    void InitTabs();
+    void OnTabChanged();
+    void ResizeTabs();
     
-    QList<RecoverableFile> m_recoverableFiles;
-
-private slots:
-    // File Recovery
-    void scanRecoveryDrive();
-    void recoverSelectedFile();
-    void filterRecoveryFiles(const QString& text);
+    // Programs Logic
+    void PopulateProgramsList(HWND hList);
+    void FilterProgramsList(HWND hList, const std::wstring& filter);
+    void ShowProgramsContextMenu(HWND hWnd, POINT pt);
+    static int CALLBACK ListViewCompareProc(LPARAM lParam1, LPARAM lParam2, LPARAM lParamSort);
+    int m_sortColumn = -1;
+    bool m_sortAscending = true;
+    
+    // Recovery Logic
+    void PopulateDrivesCombo(HWND hCombo);
+    void PopulateRecoveryTree(HWND hTree);
+    void FilterRecoveryTree(HWND hTree, const std::wstring& filter);
+    void ShowRecoveryContextMenu(HWND hWnd, POINT pt);
 };

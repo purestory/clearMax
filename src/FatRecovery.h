@@ -1,6 +1,6 @@
 #pragma once
-#include <QString>
-#include <QList>
+#include <string>
+#include <vector>
 #include <windows.h>
 #include <functional>
 #include "RecoveryTypes.h"
@@ -10,12 +10,12 @@ public:
     FatRecovery();
     ~FatRecovery();
 
-    // Scan a drive (e.g. "C:\\") and return a list of deleted files.
+    // Scan a drive (e.g. L"C:\\") and return a list of deleted files.
     // Progress callback provides 0-100 progress and status string.
-    bool scanDrive(const QString& drivePath, QList<RecoverableFile>& outFiles, std::function<void(int, const QString&)> progressCallback = nullptr);
+    bool scanDrive(const std::wstring& drivePath, std::vector<RecoverableFile>& outFiles, std::function<void(int, const std::wstring&)> progressCallback = nullptr);
     
     // Recover a file to a destination path
-    bool recoverFile(const QString& drivePath, const RecoverableFile& file, const QString& destPath);
+    bool recoverFile(const std::wstring& drivePath, const RecoverableFile& file, const std::wstring& destPath);
 
 private:
     HANDLE m_hDrive;
@@ -30,19 +30,19 @@ private:
     uint32_t m_rootCluster;
     uint32_t m_totalClusters;
     
-    bool openDrive(const QString& drivePath);
+    bool openDrive(const std::wstring& drivePath);
     void closeDrive();
     bool readBootSector();
-    bool readRaw(qint64 offset, DWORD size, void* buffer);
+    bool readRaw(int64_t offset, DWORD size, void* buffer);
     
     // Recursively scan directories for deleted files
-    void scanDirectory(uint32_t cluster, const QString& currentPath, QList<RecoverableFile>& outFiles, std::function<void(int, const QString&)> progressCallback);
+    void scanDirectory(uint32_t cluster, const std::wstring& currentPath, std::vector<RecoverableFile>& outFiles, std::function<void(int, const std::wstring&)> progressCallback);
     
     // Read cluster chain (useful for directory reading)
     bool readClusterChain(uint32_t startCluster, std::vector<uint8_t>& outData);
     
     // Convert FAT32 directory entry to our structure
-    QString parseShortName(const uint8_t* name);
+    std::wstring parseShortName(const uint8_t* name);
     
     uint32_t getFatEntry(uint32_t cluster);
 };

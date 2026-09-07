@@ -1,1 +1,119 @@
-IDI_ICON1               ICON    DISCARDABLE     "clearMax.ico"
+#pragma code_page(65001)
+#include <windows.h>
+#include "src/resource.h"
+
+// Original Icon
+IDI_APP_ICON ICON "clearMax.ico"
+
+// Main Window Dialog
+IDD_MAIN_DIALOG DIALOGEX 0, 0, 400, 300
+STYLE DS_SETFONT | DS_MODALFRAME | DS_FIXEDSYS | DS_CENTER | WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX
+CAPTION "clearMax - 클리어맥스"
+FONT 9, "맑은 고딕", 400, 0, 0x1
+BEGIN
+    CONTROL         "", IDC_TAB_MAIN, "SysTabControl32", WS_TABSTOP, 5, 5, 390, 290
+END
+
+// Tab 1: Programs
+IDD_TAB_PROGRAMS DIALOGEX 0, 0, 380, 270
+STYLE DS_SETFONT | DS_FIXEDSYS | WS_CHILD
+FONT 9, "맑은 고딕", 400, 0, 0x1
+BEGIN
+    LTEXT           "검색:", IDC_STATIC, 10, 10, 30, 10
+    EDITTEXT        IDC_EDIT_PROG_SEARCH, 45, 8, 325, 14, ES_AUTOHSCROLL
+    CONTROL         "", IDC_LIST_PROGRAMS, "SysListView32", LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS | WS_BORDER | WS_TABSTOP, 10, 30, 360, 200
+    PUSHBUTTON      "새로고침", IDC_BTN_PROG_REFRESH, 10, 240, 60, 20
+    PUSHBUTTON      "일반 제거 (Uninstall)", IDC_BTN_UNINSTALL, 170, 240, 90, 20
+    PUSHBUTTON      "강제 삭제 (레지스트리)", IDC_BTN_FORCE_REMOVE, 270, 240, 100, 20
+END
+
+// Tab 2: Shredder
+IDD_TAB_SHREDDER DIALOGEX 0, 0, 380, 270
+STYLE DS_SETFONT | DS_FIXEDSYS | WS_CHILD
+FONT 9, "맑은 고딕", 400, 0, 0x1
+BEGIN
+    LTEXT           "보안 파일 파쇄 및 빈 공간 완전 삭제", IDC_STATIC, 10, 10, 150, 10
+    PUSHBUTTON      "파일 파쇄...", IDC_BTN_SHRED_FILE, 10, 30, 80, 20
+    PUSHBUTTON      "폴더 파쇄...", IDC_BTN_SHRED_FOLDER, 100, 30, 80, 20
+    
+    GROUPBOX        "빈 공간 삭제 (Wipe Free Space)", IDC_STATIC, 10, 60, 360, 60
+    LTEXT           "드라이브:", IDC_STATIC, 20, 75, 40, 10
+    COMBOBOX        IDC_CMB_WIPE_DRIVE, 65, 73, 120, 50, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    AUTOCHECKBOX    "MFT 영역만 지우기 (빠름)", IDC_CHK_MFT_ONLY, 195, 75, 150, 10
+    PUSHBUTTON      "빈 공간 삭제 (Wipe)...", IDC_BTN_WIPE_FREESPACE, 240, 90, 120, 20
+    
+    LTEXT           "덮어쓰기 횟수:", IDC_STATIC, 10, 130, 60, 10
+    COMBOBOX        IDC_CMB_SHRED_PASSES, 75, 128, 120, 50, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    
+    LTEXT           "대기 중", IDC_LBL_SHRED_STATUS, 10, 230, 360, 15
+    CONTROL         "", IDC_PROG_SHRED, "msctls_progress32", WS_BORDER, 10, 250, 360, 15
+END
+
+// Tab 3: Browser Cleaner
+IDD_TAB_BROWSER DIALOGEX 0, 0, 380, 270
+STYLE DS_SETFONT | DS_FIXEDSYS | WS_CHILD
+FONT 9, "맑은 고딕", 400, 0, 0x1
+BEGIN
+    GROUPBOX        "브라우저 선택", IDC_STATIC, 10, 10, 100, 80
+    AUTOCHECKBOX    "Chrome (크롬)", IDC_CHK_CHROME, 20, 25, 80, 10
+    AUTOCHECKBOX    "Edge (엣지)", IDC_CHK_EDGE, 20, 40, 80, 10
+    AUTOCHECKBOX    "Firefox (파이어폭스)", IDC_CHK_FIREFOX, 20, 55, 80, 10
+    
+    GROUPBOX        "정리 항목", IDC_STATIC, 120, 10, 120, 80
+    AUTOCHECKBOX    "방문 기록 (History)", IDC_CHK_HISTORY, 130, 25, 80, 10
+    AUTOCHECKBOX    "캐시 (Cache)", IDC_CHK_CACHE, 130, 40, 80, 10
+    AUTOCHECKBOX    "쿠키 (Cookies)", IDC_CHK_COOKIES, 130, 55, 80, 10
+    AUTOCHECKBOX    "다운로드 기록", IDC_CHK_DOWNLOADS, 130, 70, 80, 10
+    
+    PUSHBUTTON      "브라우저 청소 시작", IDC_BTN_CLEAN_BROWSER, 10, 100, 120, 20
+    CONTROL         "", IDC_PROG_BROWSER, "msctls_progress32", WS_BORDER, 10, 250, 360, 15
+END
+
+// Tab 4: File Recovery
+IDD_TAB_RECOVERY DIALOGEX 0, 0, 380, 270
+STYLE DS_SETFONT | DS_FIXEDSYS | WS_CHILD
+FONT 9, "맑은 고딕", 400, 0, 0x1
+BEGIN
+    LTEXT           "드라이브:", IDC_STATIC, 10, 10, 35, 10
+    COMBOBOX        IDC_CMB_DRIVE, 45, 8, 80, 50, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    PUSHBUTTON      "스캔", IDC_BTN_SCAN, 130, 7, 50, 15
+    LTEXT           "검색:", IDC_STATIC, 190, 10, 25, 10
+    EDITTEXT        IDC_EDIT_REC_SEARCH, 220, 8, 150, 14, ES_AUTOHSCROLL
+    
+    CONTROL         "", IDC_TREE_RECOVERY, "SysTreeView32", TVS_HASBUTTONS | TVS_HASLINES | TVS_LINESATROOT | WS_BORDER | WS_TABSTOP, 10, 30, 360, 190
+    
+    LTEXT           "대기 중", IDC_LBL_REC_STATUS, 10, 225, 360, 10
+    CONTROL         "", IDC_PROG_REC, "msctls_progress32", WS_BORDER, 10, 238, 360, 10
+    
+    PUSHBUTTON      "선택 항목 복구...", IDC_BTN_RECOVER, 270, 252, 100, 15
+END
+
+// Config Dialog
+IDD_CONFIG_DIALOG DIALOGEX 0, 0, 220, 160
+STYLE DS_SETFONT | DS_MODALFRAME | DS_FIXEDSYS | DS_CENTER | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "일괄 삭제 설정"
+FONT 9, "맑은 고딕", 400, 0, 0x1
+BEGIN
+    GROUPBOX        "브라우저 정리 항목", IDC_STATIC, 10, 10, 200, 70
+    AUTOCHECKBOX    "인터넷 방문 기록", IDC_CHK_CFG_HISTORY, 20, 25, 120, 10
+    AUTOCHECKBOX    "캐시 (Cache)", IDC_CHK_CFG_CACHE, 20, 40, 120, 10
+    AUTOCHECKBOX    "쿠키 (Cookies)", IDC_CHK_CFG_COOKIES, 20, 55, 120, 10
+    AUTOCHECKBOX    "다운로드 기록", IDC_CHK_CFG_DOWNLOADS, 120, 25, 80, 10
+    
+    GROUPBOX        "디스크 빈 공간 삭제", IDC_STATIC, 10, 85, 200, 45
+    AUTOCHECKBOX    "빈 공간 삭제 (모든 드라이브)", IDC_CHK_CFG_ALL_DRIVES, 20, 100, 180, 10
+    AUTOCHECKBOX    "MFT 테이블만 삭제 (빠름)", IDC_CHK_CFG_MFT_ONLY, 35, 115, 150, 10
+    
+    PUSHBUTTON      "저장", IDC_BTN_SAVE_CONFIG, 160, 135, 50, 20
+END
+
+// Quick Delete Progress Dialog
+IDD_QUICK_PROGRESS_DIALOG DIALOGEX 0, 0, 220, 60
+STYLE DS_SETFONT | DS_MODALFRAME | DS_FIXEDSYS | DS_CENTER | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "일괄 삭제 진행 중..."
+FONT 9, "맑은 고딕", 400, 0, 0x1
+BEGIN
+    LTEXT           "작업을 준비 중입니다...", IDC_LBL_QUICK_STATUS, 10, 10, 200, 10
+    CONTROL         "", IDC_PROG_QUICK, "msctls_progress32", WS_BORDER, 10, 25, 200, 15
+    PUSHBUTTON      "취소", IDCANCEL, 85, 45, 50, 15
+END

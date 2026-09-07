@@ -5,19 +5,12 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-# Qt 6 (fallback to Qt 5 if 6 is not found)
-find_package(QT NAMES Qt6 Qt5 REQUIRED COMPONENTS Widgets Core Gui)
-find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Widgets Core Gui)
-
-set(CMAKE_AUTOMOC ON)
-set(CMAKE_AUTORCC ON)
-set(CMAKE_AUTOUIC ON)
+add_compile_definitions(UNICODE _UNICODE)
+add_compile_options("/utf-8")
 
 # Source files
 set(SOURCES
     src/main.cpp
-    src/MainWindow.cpp
-    src/MainWindow.h
     src/FileShredder.cpp
     src/FileShredder.h
     src/RegistryMgr.cpp
@@ -27,6 +20,12 @@ set(SOURCES
     src/NtfsRecovery.cpp
     src/NtfsRecovery.h
     src/FatRecovery.cpp
+    src/FatRecovery.h
+    src/RecoveryTypes.h
+    src/TrayApp.cpp
+    src/TrayApp.h
+    src/MainWindow.cpp
+    src/MainWindow.h
     clearMax.rc
 )
 
@@ -37,9 +36,7 @@ if(WIN32 AND MSVC)
     set_target_properties(clearMax PROPERTIES LINK_FLAGS "/MANIFESTUAC:\"level='requireAdministrator' uiAccess='false'\"")
 endif()
 
-target_link_libraries(clearMax PRIVATE Qt${QT_VERSION_MAJOR}::Widgets Qt${QT_VERSION_MAJOR}::Core Qt${QT_VERSION_MAJOR}::Gui)
-
-# Windows API libraries needed for registry and shell execution
+# Windows API libraries
 if(WIN32)
-    target_link_libraries(clearMax PRIVATE Advapi32 Shell32 User32 Shlwapi)
+    target_link_libraries(clearMax PRIVATE Advapi32 Shell32 User32 Shlwapi Comctl32 Ole32)
 endif()

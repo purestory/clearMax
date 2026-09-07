@@ -1,899 +1,850 @@
 #include "MainWindow.h"
-#include "RegistryMgr.h"
 #include "FileShredder.h"
 #include "BrowserCleaner.h"
 #include "NtfsRecovery.h"
 #include "FatRecovery.h"
+#include "RegistryMgr.h"
+#include <windowsx.h>
+#include <shobjidl.h>
+#include <thread>
+#include <shlobj.h>
+#include <algorithm>
 
-#include <QVBoxLayout>
-#include <QHBoxLayout>
-#include <QHeaderView>
-#include <QMessageBox>
-#include <QFileDialog>
-#include <QApplication>
-#include <QStorageInfo>
-#include <QFileIconProvider>
-#include <QElapsedTimer>
-#include <QThread>
-#include <QMenu>
-#include <QStyle>
-#include <QDesktopServices>
-#include <QUrl>
-#include <QHeaderView>
-#include <windows.h>
-
-class SortTreeItem : public QTreeWidgetItem {
-public:
-    SortTreeItem(const QStringList& strings) : QTreeWidgetItem(strings) {}
-    bool operator<(const QTreeWidgetItem &other) const override {
-        int column = treeWidget() ? treeWidget()->sortColumn() : 0;
-        bool asc = treeWidget() ? (treeWidget()->header()->sortIndicatorOrder() == Qt::AscendingOrder) : true;
-        
-        if (column == 0) {
-            bool isUnknown1 = (text(0) == "Unknown Folders");
-            bool isUnknown2 = (other.text(0) == "Unknown Folders");
-            
-            if (isUnknown1 && !isUnknown2) return asc ? false : true; 
-            if (!isUnknown1 && isUnknown2) return asc ? true : false;  
-            
-            // Folders always on top
-            bool isFolder1 = !data(0, Qt::UserRole).isValid();
-            bool isFolder2 = !other.data(0, Qt::UserRole).isValid();
-            if (isFolder1 != isFolder2) {
-                return asc ? isFolder1 : !isFolder1;
-            }
-        }
-        
-        if (column == 2) { // Size column (numeric sort)
-            bool ok1, ok2;
-            qint64 size1 = text(2).toLongLong(&ok1);
-            qint64 size2 = other.text(2).toLongLong(&ok2);
-            if (ok1 && ok2) {
-                return size1 < size2;
-            }
-        }
-        
-        return QTreeWidgetItem::operator<(other);
-    }
-};
-
-MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
-    setWindowTitle("ClearMax - Ultimate PC Cleaner & Shredder");
-    resize(1100, 650);
-    setupUi();
-    loadPrograms();
+MainWindow::MainWindow(HINSTANCE hInstance) 
+    : m_hInstance(hInstance), m_hWnd(NULL), m_hTabControl(NULL),
+      m_hTabPrograms(NULL), m_hTabShredder(NULL), m_hTabBrowser(NULL), m_hTabRecovery(NULL) {
 }
 
-MainWindow::~MainWindow() {}
-
-void MainWindow::setupUi() {
-    QWidget* centralWidget = new QWidget(this);
-    setCentralWidget(centralWidget);
-    
-    QVBoxLayout* mainLayout = new QVBoxLayout(centralWidget);
-    
-    tabWidget = new QTabWidget(this);
-    mainLayout->addWidget(tabWidget);
-    
-    progressBar = new QProgressBar(this);
-    progressBar->setRange(0, 100);
-    progressBar->setValue(0);
-    mainLayout->addWidget(progressBar);
-    
-    lblStatus = new QLabel("Ready", this);
-    lblStatus->setAlignment(Qt::AlignCenter);
-    mainLayout->addWidget(lblStatus);
-    
-    // --- Tab 1: Program Management ---
-    QWidget* tabPrograms = new QWidget();
-    QVBoxLayout* layoutPrograms = new QVBoxLayout(tabPrograms);
-    
-    // Add Search Box
-    QHBoxLayout* searchLayout = new QHBoxLayout();
-    searchLayout->addWidget(new QLabel("Search:"));
-    searchBox = new QLineEdit();
-    searchBox->setPlaceholderText("Type program name to filter...");
-    searchLayout->addWidget(searchBox);
-    layoutPrograms->addLayout(searchLayout);
-
-    programsTable = new QTableWidget();
-    programsTable->setColumnCount(6);
-    programsTable->setHorizontalHeaderLabels({"Name", "Publisher", "Version", "Size", "Install Date", "Ghost?"});
-    programsTable->horizontalHeader()->setSectionResizeMode(QHeaderView::Interactive); // Allow user to resize columns
-    programsTable->horizontalHeader()->setStretchLastSection(true); // Stretch the last column to fill remaining space
-    programsTable->setHorizontalScrollMode(QAbstractItemView::ScrollPerPixel);
-    programsTable->setSelectionBehavior(QAbstractItemView::SelectRows);
-    programsTable->setSelectionMode(QAbstractItemView::SingleSelection);
-    programsTable->setSortingEnabled(true); // Enable sorting when header is clicked
-    programsTable->setContextMenuPolicy(Qt::CustomContextMenu);
-    layoutPrograms->addWidget(programsTable);
-    
-    QHBoxLayout* layoutProgramBtns = new QHBoxLayout();
-    btnRefreshPrograms = new QPushButton("Refresh List");
-    btnUninstall = new QPushButton("Normal Uninstall");
-    btnForceRemove = new QPushButton("Force Remove (Ghost)");
-    
-    layoutProgramBtns->addWidget(btnRefreshPrograms);
-    layoutProgramBtns->addStretch();
-    layoutProgramBtns->addWidget(btnUninstall);
-    layoutProgramBtns->addWidget(btnForceRemove);
-    layoutPrograms->addLayout(layoutProgramBtns);
-    
-    tabWidget->addTab(tabPrograms, "Program Management");
-    
-    connect(btnRefreshPrograms, &QPushButton::clicked, this, &MainWindow::loadPrograms);
-    connect(btnUninstall, &QPushButton::clicked, this, &MainWindow::uninstallSelected);
-    connect(btnForceRemove, &QPushButton::clicked, this, &MainWindow::forceRemoveSelected);
-    connect(searchBox, &QLineEdit::textChanged, this, &MainWindow::filterPrograms);
-    connect(programsTable, &QTableWidget::itemSelectionChanged, this, [this]() {
-        bool hasSelection = programsTable->selectedItems().count() > 0;
-        btnUninstall->setEnabled(hasSelection);
-        btnForceRemove->setEnabled(hasSelection);
-    });
-    connect(programsTable, &QTableWidget::customContextMenuRequested, this, &MainWindow::showProgramsContextMenu);
-
-    // --- Tab 2: File Shredder ---
-    QWidget* tabShredder = new QWidget();
-    QVBoxLayout* layoutShredder = new QVBoxLayout(tabShredder);
-    
-    layoutShredder->addWidget(new QLabel("<b>Secure File Deletion</b>"));
-    
-    QHBoxLayout* fileLayout = new QHBoxLayout();
-    lblSelectedFile = new QLabel("No file/folder selected.");
-    btnBrowseFile = new QPushButton("Browse File...");
-    btnBrowseFolder = new QPushButton("Browse Folder...");
-    fileLayout->addWidget(lblSelectedFile, 1);
-    fileLayout->addWidget(btnBrowseFile);
-    fileLayout->addWidget(btnBrowseFolder);
-    layoutShredder->addLayout(fileLayout);
-    
-    QHBoxLayout* passLayout = new QHBoxLayout();
-    passLayout->addWidget(new QLabel("Security Level:"));
-    comboPasses = new QComboBox();
-    comboPasses->addItem("0-Pass (Fast Delete/SSD)", QVariant(static_cast<int>(ShredPass::Pass_0)));
-    comboPasses->addItem("1-Pass (Quick)", QVariant(static_cast<int>(ShredPass::Pass_1)));
-    comboPasses->addItem("3-Pass (DoD 5220.22-M)", QVariant(static_cast<int>(ShredPass::Pass_3)));
-    comboPasses->addItem("7-Pass (Secure)", QVariant(static_cast<int>(ShredPass::Pass_7)));
-    passLayout->addWidget(comboPasses);
-    passLayout->addStretch();
-    layoutShredder->addLayout(passLayout);
-    
-    QHBoxLayout* shredBtnLayout = new QHBoxLayout();
-    btnShred = new QPushButton("Shred File Permanently");
-    btnShred->setStyleSheet("QPushButton { background-color: #ffcccc; color: red; font-weight: bold; }");
-    shredBtnLayout->addWidget(btnShred);
-    
-    btnPauseShred = new QPushButton("Pause");
-    btnCancelShred = new QPushButton("Stop");
-    btnPauseShred->setVisible(false);
-    btnCancelShred->setVisible(false);
-    shredBtnLayout->addWidget(btnPauseShred);
-    shredBtnLayout->addWidget(btnCancelShred);
-    layoutShredder->addLayout(shredBtnLayout);
-    
-    layoutShredder->addSpacing(20);
-    layoutShredder->addWidget(new QLabel("<b>Free Space Wiping</b> (Obfuscate already deleted files)"));
-    
-    QHBoxLayout* wipeLayout = new QHBoxLayout();
-    wipeLayout->addWidget(new QLabel("Select Drive:"));
-    comboDrives = new QComboBox();
-    comboDrives->addItem("All Drives");
-    for (const QStorageInfo &storage : QStorageInfo::mountedVolumes()) {
-        if (storage.isValid() && storage.isReady() && !storage.isReadOnly()) {
-            comboDrives->addItem(storage.rootPath());
-        }
-    }
-    wipeLayout->addWidget(comboDrives);
-    wipeLayout->addStretch();
-    layoutShredder->addLayout(wipeLayout);
-    
-    QHBoxLayout* wipeModeLayout = new QHBoxLayout();
-    wipeModeLayout->addWidget(new QLabel("Wipe Mode:"));
-    comboWipeMode = new QComboBox();
-    comboWipeMode->addItem("MFT (Table) Only - SSD Recommended", QVariant(static_cast<int>(WipeMode::MftOnly)));
-    comboWipeMode->addItem("Full Free Space & MFT Wipe", QVariant(static_cast<int>(WipeMode::FullWipe)));
-    wipeModeLayout->addWidget(comboWipeMode);
-    wipeModeLayout->addStretch();
-    layoutShredder->addLayout(wipeModeLayout);
-    
-    btnWipeFreeSpace = new QPushButton("Wipe Free Space");
-    layoutShredder->addWidget(btnWipeFreeSpace);
-    
-    QHBoxLayout* wipeControlsLayout = new QHBoxLayout();
-    btnPauseWipe = new QPushButton("Pause");
-    btnCancelWipe = new QPushButton("Stop");
-    btnPauseWipe->setVisible(false);
-    btnCancelWipe->setVisible(false);
-    wipeControlsLayout->addWidget(btnPauseWipe);
-    wipeControlsLayout->addWidget(btnCancelWipe);
-    layoutShredder->addLayout(wipeControlsLayout);
-    
-    layoutShredder->addStretch();
-    tabWidget->addTab(tabShredder, "File Shredder");
-    
-    connect(btnBrowseFile, &QPushButton::clicked, this, &MainWindow::browseFileToShred);
-    connect(btnBrowseFolder, &QPushButton::clicked, this, &MainWindow::browseFolderToShred);
-    connect(btnShred, &QPushButton::clicked, this, &MainWindow::shredSelectedFile);
-    connect(btnPauseShred, &QPushButton::clicked, this, &MainWindow::pauseOperation);
-    connect(btnCancelShred, &QPushButton::clicked, this, &MainWindow::cancelOperation);
-    connect(btnWipeFreeSpace, &QPushButton::clicked, this, &MainWindow::wipeFreeSpace);
-    connect(btnPauseWipe, &QPushButton::clicked, this, &MainWindow::pauseOperation);
-    connect(btnCancelWipe, &QPushButton::clicked, this, &MainWindow::cancelOperation);
-
-    // --- Tab 3: Browser Cleaner ---
-    QWidget* tabBrowser = new QWidget();
-    QVBoxLayout* layoutBrowser = new QVBoxLayout(tabBrowser);
-    
-    layoutBrowser->addWidget(new QLabel("<b>Select Browsers to Clean</b>"));
-    chkChrome = new QCheckBox("Google Chrome");
-    chkEdge = new QCheckBox("Microsoft Edge");
-    chkFirefox = new QCheckBox("Mozilla Firefox");
-    layoutBrowser->addWidget(chkChrome);
-    layoutBrowser->addWidget(chkEdge);
-    layoutBrowser->addWidget(chkFirefox);
-    
-    layoutBrowser->addSpacing(10);
-    layoutBrowser->addWidget(new QLabel("<b>Select Data to Shred</b>"));
-    chkHistory = new QCheckBox("History");
-    chkCookies = new QCheckBox("Cookies");
-    chkCache = new QCheckBox("Cache");
-    layoutBrowser->addWidget(chkHistory);
-    layoutBrowser->addWidget(chkCookies);
-    layoutBrowser->addWidget(chkCache);
-    
-    btnCleanBrowsers = new QPushButton("Securely Clean Browsers");
-    btnCleanBrowsers->setStyleSheet("QPushButton { background-color: #ffcccc; color: red; font-weight: bold; }");
-    layoutBrowser->addSpacing(20);
-    layoutBrowser->addWidget(btnCleanBrowsers);
-    layoutBrowser->addStretch();
-    
-    tabWidget->addTab(tabBrowser, "Browser Cleaner");
-    
-    connect(btnCleanBrowsers, &QPushButton::clicked, this, &MainWindow::cleanBrowserData);
-
-    // --- Tab 4: File Recovery ---
-    QWidget* tabRecovery = new QWidget();
-    QVBoxLayout* layoutRecovery = new QVBoxLayout(tabRecovery);
-    
-    QHBoxLayout* recoveryTopLayout = new QHBoxLayout();
-    recoveryTopLayout->addWidget(new QLabel("Select Drive:"));
-    comboRecoveryDrives = new QComboBox();
-    for (const QStorageInfo &storage : QStorageInfo::mountedVolumes()) {
-        if (storage.isValid() && storage.isReady() && !storage.isReadOnly()) {
-            QString fs = storage.fileSystemType();
-            if (fs.compare("NTFS", Qt::CaseInsensitive) == 0 || fs.compare("FAT", Qt::CaseInsensitive) == 0 || fs.compare("FAT32", Qt::CaseInsensitive) == 0 || fs.compare("exFAT", Qt::CaseInsensitive) == 0) {
-                comboRecoveryDrives->addItem(storage.rootPath());
-            }
-        }
-    }
-    recoveryTopLayout->addWidget(comboRecoveryDrives);
-    btnScanDrive = new QPushButton("Scan for Deleted Files");
-    recoveryTopLayout->addWidget(btnScanDrive);
-    recoveryTopLayout->addStretch();
-    layoutRecovery->addLayout(recoveryTopLayout);
-    
-    QHBoxLayout* searchRecLayout = new QHBoxLayout();
-    searchRecLayout->addWidget(new QLabel("Search:"));
-    searchRecoveryBox = new QLineEdit();
-    searchRecoveryBox->setPlaceholderText("Type filename or extension to filter...");
-    searchRecLayout->addWidget(searchRecoveryBox);
-    layoutRecovery->addLayout(searchRecLayout);
-    
-    recoveryTree = new QTreeWidget();
-    recoveryTree->setColumnCount(4);
-    recoveryTree->setHeaderLabels({"Name", "Extension", "Size (Bytes)", "Recoverability"});
-    recoveryTree->header()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
-    recoveryTree->setSelectionBehavior(QAbstractItemView::SelectRows);
-    recoveryTree->setSelectionMode(QAbstractItemView::SingleSelection);
-    recoveryTree->setSortingEnabled(true);
-    recoveryTree->setContextMenuPolicy(Qt::CustomContextMenu);
-    layoutRecovery->addWidget(recoveryTree);
-    
-    btnRecoverSelected = new QPushButton("Recover Selected File");
-    btnRecoverSelected->setEnabled(false);
-    layoutRecovery->addWidget(btnRecoverSelected);
-    
-    tabWidget->addTab(tabRecovery, "File Recovery");
-    
-    connect(btnScanDrive, &QPushButton::clicked, this, &MainWindow::scanRecoveryDrive);
-    connect(btnRecoverSelected, &QPushButton::clicked, this, &MainWindow::recoverSelectedFile);
-    connect(searchRecoveryBox, &QLineEdit::textChanged, this, &MainWindow::filterRecoveryFiles);
-    connect(recoveryTree, &QTreeWidget::itemSelectionChanged, this, [this]() {
-        btnRecoverSelected->setEnabled(recoveryTree->selectedItems().count() > 0);
-    });
-    connect(recoveryTree, &QTreeWidget::customContextMenuRequested, this, &MainWindow::showRecoveryContextMenu);
+MainWindow::~MainWindow() {
 }
 
-void MainWindow::loadPrograms() {
-    programsTable->setSortingEnabled(false); // Disable sorting while populating
-    programsTable->setRowCount(0);
-    QList<ProgramInfo> programs = RegistryMgr::getInstalledPrograms();
-    
-    QFileIconProvider iconProvider;
-    
-    for (int i = 0; i < programs.size(); ++i) {
-        programsTable->insertRow(i);
-        
-        QTableWidgetItem* nameItem = new QTableWidgetItem(programs[i].displayName);
-        // Try to get icon
-        QIcon icon;
-        QString iconPath = programs[i].displayIcon;
-        if (!iconPath.isEmpty()) {
-            if (iconPath.contains(",")) {
-                iconPath = iconPath.split(",").first(); // Extract path before comma
-            }
-            iconPath.remove("\"");
-            QFileInfo fi(iconPath);
-            if (fi.exists()) {
-                icon = iconProvider.icon(fi);
-            }
-        }
-        if (icon.isNull() && !programs[i].uninstallString.isEmpty()) {
-            QString exePath = programs[i].uninstallString;
-            if (exePath.contains("\"")) {
-                exePath = exePath.split("\"")[1];
-            }
-            QFileInfo fi(exePath);
-            if (fi.exists() && fi.suffix().toLower() == "exe") {
-                icon = iconProvider.icon(fi);
-            }
-        }
-        if (!icon.isNull()) {
-            nameItem->setIcon(icon);
-        }
-        
-        programsTable->setItem(i, 0, nameItem);
-        programsTable->setItem(i, 1, new QTableWidgetItem(programs[i].publisher));
-        programsTable->setItem(i, 2, new QTableWidgetItem(programs[i].displayVersion));
-        
-        QString sizeStr = "";
-        if (programs[i].estimatedSize > 0) {
-            double mb = programs[i].estimatedSize / 1024.0;
-            if (mb > 1024) {
-                sizeStr = QString::number(mb / 1024.0, 'f', 2) + " GB";
-            } else {
-                sizeStr = QString::number(mb, 'f', 2) + " MB";
-            }
-        }
-        
-        QTableWidgetItem* sizeItem = new QTableWidgetItem(sizeStr);
-        // Set data for proper numerical sorting instead of string sorting
-        sizeItem->setData(Qt::UserRole + 1, static_cast<qulonglong>(programs[i].estimatedSize));
-        programsTable->setItem(i, 3, sizeItem);
-        
-        QString dateStr = programs[i].installDate;
-        if (dateStr.length() == 8) { // format YYYY-MM-DD
-            dateStr = dateStr.mid(0, 4) + "-" + dateStr.mid(4, 2) + "-" + dateStr.mid(6, 2);
-        }
-        programsTable->setItem(i, 4, new QTableWidgetItem(dateStr));
-        
-        programsTable->setItem(i, 5, new QTableWidgetItem(programs[i].isGhost ? "Yes" : "No"));
-        
-        // Store the full info in the first item's user data
-        QVariant var;
-        var.setValue(programs[i].uninstallString + "|" + programs[i].registryKeyPath);
-        programsTable->item(i, 0)->setData(Qt::UserRole, var);
-    }
-    programsTable->setSortingEnabled(true);
-    programsTable->resizeColumnsToContents(); // Initially size to fit, but user can still resize because of Interactive mode
+bool MainWindow::Initialize() {
+    m_hWnd = CreateDialogParamW(m_hInstance, MAKEINTRESOURCEW(IDD_MAIN_DIALOG), NULL, MainDlgProc, (LPARAM)this);
+    if (!m_hWnd) return false;
+    return true;
 }
 
-void MainWindow::filterPrograms(const QString& text) {
-    for (int i = 0; i < programsTable->rowCount(); ++i) {
-        bool match = false;
-        QTableWidgetItem* item = programsTable->item(i, 0); // Name column
-        if (item && item->text().contains(text, Qt::CaseInsensitive)) {
-            match = true;
-        }
-        programsTable->setRowHidden(i, !match);
+void MainWindow::Show() {
+    if (m_hWnd) {
+        ShowWindow(m_hWnd, SW_SHOW);
+        UpdateWindow(m_hWnd);
     }
 }
 
-void MainWindow::uninstallSelected() {
-    int row = programsTable->currentRow();
-    if (row < 0) return;
-    
-    QString data = programsTable->item(row, 0)->data(Qt::UserRole).toString();
-    QString uninstallString = data.split("|")[0];
-    
-    if (uninstallString.isEmpty()) {
-        QMessageBox::warning(this, "Error", "No uninstall string found for this program.");
-        return;
-    }
-    
-    ProgramInfo dummy;
-    dummy.uninstallString = uninstallString;
-    RegistryMgr::uninstallProgram(dummy, [this]() {
-        QMetaObject::invokeMethod(this, [this]() {
-            loadPrograms();
-        }, Qt::QueuedConnection);
-    });
-}
-
-void MainWindow::forceRemoveSelected() {
-    int row = programsTable->currentRow();
-    if (row < 0) return;
-    
-    QString name = programsTable->item(row, 0)->text();
-    QString data = programsTable->item(row, 0)->data(Qt::UserRole).toString();
-    QString regKey = data.split("|")[1];
-    
-    QMessageBox::StandardButton reply = QMessageBox::warning(this, "Warning", 
-        "Are you sure you want to forcefully remove the registry keys for '" + name + "'? This action cannot be undone.",
-        QMessageBox::Yes | QMessageBox::No);
-        
-    if (reply == QMessageBox::Yes) {
-        ProgramInfo dummy;
-        dummy.registryKeyPath = regKey;
-        RegistryMgr::forceRemoveProgram(dummy);
-        loadPrograms();
-    }
-}
-
-void MainWindow::browseFileToShred() {
-    QString file = QFileDialog::getOpenFileName(this, "Select File to Shred");
-    if (!file.isEmpty()) {
-        currentFileToShred = file;
-        lblSelectedFile->setText(file);
-    }
-}
-
-void MainWindow::browseFolderToShred() {
-    QString folder = QFileDialog::getExistingDirectory(this, "Select Folder to Shred");
-    if (!folder.isEmpty()) {
-        currentFileToShred = folder;
-        lblSelectedFile->setText(folder);
-    }
-}
-
-void MainWindow::shredSelectedFile() {
-    if (currentFileToShred.isEmpty()) {
-        QMessageBox::warning(this, "Error", "Please select a file or folder first.");
-        return;
-    }
-    
-    QMessageBox::StandardButton reply = QMessageBox::critical(this, "CRITICAL WARNING", 
-        "You are about to PERMANENTLY DESTROY the selected path.\nIt will NOT be recoverable by ANY means.\n\nAre you absolutely sure?",
-        QMessageBox::Yes | QMessageBox::No);
-        
-    if (reply == QMessageBox::Yes) {
-        btnShred->setEnabled(false);
-        btnPauseShred->setVisible(true);
-        btnCancelShred->setVisible(true);
-        btnPauseShred->setText("Pause");
-        btnPauseShred->setEnabled(true);
-        m_shredState = ShredState::Running;
-        
-        progressBar->setValue(0);
-        
-        ShredPass passes = static_cast<ShredPass>(comboPasses->currentData().toInt());
-        
-        if (passes != ShredPass::Pass_1 && FileShredder::isDriveSSD(currentFileToShred)) {
-            QMessageBox::information(this, "SSD Detected", "The selected path is on an SSD.\nTo protect your SSD's lifespan and because wear-leveling makes multiple passes ineffective, the security level has been automatically adjusted to 1-Pass (Quick).");
-            passes = ShredPass::Pass_1;
-            // Optionally update UI combo box to reflect this
-            comboPasses->setCurrentIndex(0);
-        }
-        
-        QElapsedTimer timer;
-        timer.start();
-        
-        auto cancelCheck = [this]() -> bool {
-            QApplication::processEvents();
-            while (m_shredState == ShredState::Paused) {
-                QThread::msleep(50);
-                QApplication::processEvents();
-            }
-            return m_shredState == ShredState::Cancelled;
-        };
-        
-        int result = FileShredder::shredPath(currentFileToShred, passes, [this, &timer](int progress, const QString& statusMsg) {
-            this->progressBar->setValue(progress);
-            if (!statusMsg.isEmpty()) {
-                if (statusMsg.startsWith("Gathering files")) {
-                    this->lblStatus->setText(statusMsg);
-                    timer.restart(); // Restart timer so ETA doesn't include gathering time
-                } else if (progress > 0 && progress < 100) {
-                    qint64 elapsedMs = timer.elapsed();
-                    qint64 totalEstimatedMs = (elapsedMs * 100) / progress;
-                    qint64 remainingMs = totalEstimatedMs - elapsedMs;
-                    int remainingSec = static_cast<int>(remainingMs / 1000);
-                    int min = remainingSec / 60;
-                    int sec = remainingSec % 60;
-                    
-                    QString displayMsg = statusMsg;
-                    if (displayMsg.length() > 60) {
-                        displayMsg = "..." + displayMsg.right(57);
-                    }
-                    
-                    this->lblStatus->setText(QString("ETA: %1m %2s | %3")
-                        .arg(min).arg(sec, 2, 10, QChar('0')).arg(displayMsg));
-                } else {
-                    this->lblStatus->setText(statusMsg);
-                }
-            }
-            QApplication::processEvents(); // Keep UI responsive
-        }, cancelCheck);
-        
-        progressBar->setValue(100);
-        btnShred->setEnabled(true);
-        btnPauseShred->setVisible(false);
-        btnCancelShred->setVisible(false);
-        
-        if (m_shredState == ShredState::Cancelled) {
-            lblStatus->setText("Cancelled");
-            QMessageBox::information(this, "Cancelled", "Shredding process was stopped by user.");
-            lblStatus->setText("Ready");
-        } else if (result == 0) {
-            QMessageBox::information(this, "Success", "Selected path has been securely shredded.");
-            currentFileToShred.clear();
-            lblSelectedFile->setText("No file/folder selected.");
-            lblStatus->setText("Ready");
-        } else if (result > 0) {
-            QMessageBox::warning(this, "Partial Success", QString("Shredding completed, but %1 file(s) could not be deleted.\n(They might be in use by another program or protected by the system)").arg(result));
-            lblStatus->setText("Ready");
-        } else {
-            QMessageBox::warning(this, "Error", "Failed to access the selected path or invalid path.");
-            lblStatus->setText("Ready");
-        }
-    }
-}
-
-void MainWindow::wipeFreeSpace() {
-    QString selectedDrive = comboDrives->currentText();
-    if (selectedDrive.isEmpty()) return;
-    
-    QStringList drivesToWipe;
-    if (selectedDrive == "All Drives") {
-        for (const QStorageInfo &storage : QStorageInfo::mountedVolumes()) {
-            if (storage.isValid() && storage.isReady() && !storage.isReadOnly()) {
-                drivesToWipe.append(storage.rootPath());
-            }
-        }
+INT_PTR CALLBACK MainWindow::MainDlgProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) {
+    MainWindow* pThis = nullptr;
+    if (message == WM_INITDIALOG) {
+        pThis = (MainWindow*)lParam;
+        SetWindowLongPtr(hWnd, GWLP_USERDATA, (LONG_PTR)pThis);
+        pThis->m_hWnd = hWnd;
     } else {
-        drivesToWipe.append(selectedDrive);
+        pThis = (MainWindow*)GetWindowLongPtr(hWnd, GWLP_USERDATA);
+    }
+
+    if (pThis) {
+        return pThis->HandleMainMessage(hWnd, message, wParam, lParam);
+    }
+    return FALSE;
+}
+
+INT_PTR MainWindow::HandleMainMessage(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) {
+    switch (message) {
+        case WM_INITDIALOG:
+            // Set the window icon (for Taskbar and Alt+Tab)
+            SendMessageW(hWnd, WM_SETICON, ICON_BIG, (LPARAM)LoadIconW(GetModuleHandle(NULL), MAKEINTRESOURCEW(IDI_APP_ICON)));
+            SendMessageW(hWnd, WM_SETICON, ICON_SMALL, (LPARAM)LoadIconW(GetModuleHandle(NULL), MAKEINTRESOURCEW(IDI_APP_ICON)));
+            InitTabs();
+            return (INT_PTR)TRUE;
+            
+        case WM_NOTIFY: {
+            LPNMHDR lpnmhdr = (LPNMHDR)lParam;
+            if (lpnmhdr->code == TCN_SELCHANGE && lpnmhdr->idFrom == IDC_TAB_MAIN) {
+                OnTabChanged();
+            }
+            break;
+        }
+
+        case WM_SYSCOMMAND:
+            if ((wParam & 0xFFF0) == SC_MINIMIZE) {
+                ShowWindow(hWnd, SW_HIDE);
+                return (INT_PTR)TRUE;
+            } else if ((wParam & 0xFFF0) == SC_CLOSE) {
+                ShowWindow(hWnd, SW_HIDE);
+                return (INT_PTR)TRUE; // Just hide, don't close. Tray icon handles exit.
+            }
+            break;
+            
+        case WM_CLOSE:
+            ShowWindow(hWnd, SW_HIDE);
+            return (INT_PTR)TRUE;
+
+        case WM_DESTROY:
+            PostQuitMessage(0);
+            return (INT_PTR)TRUE;
+    }
+    return (INT_PTR)FALSE;
+}
+
+void MainWindow::InitTabs() {
+    m_hTabControl = GetDlgItem(m_hWnd, IDC_TAB_MAIN);
+
+    TCITEMW tie;
+    tie.mask = TCIF_TEXT | TCIF_IMAGE;
+    tie.iImage = -1;
+    
+    tie.pszText = (LPWSTR)L"프로그램 관리";
+    TabCtrl_InsertItem(m_hTabControl, 0, &tie);
+    
+    tie.pszText = (LPWSTR)L"파일 파쇄기";
+    TabCtrl_InsertItem(m_hTabControl, 1, &tie);
+    
+    tie.pszText = (LPWSTR)L"브라우저 클리너";
+    TabCtrl_InsertItem(m_hTabControl, 2, &tie);
+    
+    tie.pszText = (LPWSTR)L"파일 복구";
+    TabCtrl_InsertItem(m_hTabControl, 3, &tie);
+
+    m_hTabPrograms = CreateDialogParamW(m_hInstance, MAKEINTRESOURCEW(IDD_TAB_PROGRAMS), m_hTabControl, ProgramsDlgProc, (LPARAM)this);
+    m_hTabShredder = CreateDialogParamW(m_hInstance, MAKEINTRESOURCEW(IDD_TAB_SHREDDER), m_hTabControl, ShredderDlgProc, (LPARAM)this);
+    m_hTabBrowser  = CreateDialogParamW(m_hInstance, MAKEINTRESOURCEW(IDD_TAB_BROWSER), m_hTabControl, BrowserDlgProc, (LPARAM)this);
+    m_hTabRecovery = CreateDialogParamW(m_hInstance, MAKEINTRESOURCEW(IDD_TAB_RECOVERY), m_hTabControl, RecoveryDlgProc, (LPARAM)this);
+
+    ResizeTabs();
+    OnTabChanged();
+}
+
+void MainWindow::ResizeTabs() {
+    RECT rcClient, rcTab;
+    GetClientRect(m_hTabControl, &rcClient);
+    TabCtrl_AdjustRect(m_hTabControl, FALSE, &rcClient);
+
+    HWND tabs[] = { m_hTabPrograms, m_hTabShredder, m_hTabBrowser, m_hTabRecovery };
+    for (int i = 0; i < 4; ++i) {
+        SetWindowPos(tabs[i], NULL, rcClient.left, rcClient.top, rcClient.right - rcClient.left, rcClient.bottom - rcClient.top, SWP_NOZORDER);
+    }
+}
+
+void MainWindow::OnTabChanged() {
+    int sel = TabCtrl_GetCurSel(m_hTabControl);
+    HWND tabs[] = { m_hTabPrograms, m_hTabShredder, m_hTabBrowser, m_hTabRecovery };
+    
+    for (int i = 0; i < 4; ++i) {
+        ShowWindow(tabs[i], (i == sel) ? SW_SHOW : SW_HIDE);
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Programs Tab
+// -----------------------------------------------------------------------------
+INT_PTR CALLBACK MainWindow::ProgramsDlgProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) {
+    MainWindow* pThis = nullptr;
+    if (message == WM_INITDIALOG) {
+        pThis = (MainWindow*)lParam;
+        SetWindowLongPtr(hWnd, GWLP_USERDATA, (LONG_PTR)pThis);
+        
+        HWND hList = GetDlgItem(hWnd, IDC_LIST_PROGRAMS);
+        ListView_SetExtendedListViewStyle(hList, LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES | LVS_EX_DOUBLEBUFFER);
+        
+        LVCOLUMNW lvc;
+        lvc.mask = LVCF_FMT | LVCF_WIDTH | LVCF_TEXT | LVCF_SUBITEM;
+        lvc.fmt = LVCFMT_LEFT;
+        
+        const wchar_t* colNames[] = { L"Name", L"Publisher", L"Version", L"Size", L"Install Date", L"Ghost?" };
+        int colWidths[] = { 200, 120, 80, 80, 90, 50 };
+        
+        for (int i = 0; i < 6; ++i) {
+            lvc.iSubItem = i;
+            lvc.cx = colWidths[i];
+            lvc.pszText = (LPWSTR)colNames[i];
+            lvc.fmt = (i == 3) ? LVCFMT_RIGHT : LVCFMT_LEFT;
+            ListView_InsertColumn(hList, i, &lvc);
+        }
+        
+        pThis->PopulateProgramsList(hList);
+        
+        return (INT_PTR)TRUE;
+    } else {
+        pThis = (MainWindow*)GetWindowLongPtr(hWnd, GWLP_USERDATA);
+    }
+
+    if (pThis) return pThis->HandleProgramsMessage(hWnd, message, wParam, lParam);
+    return (INT_PTR)FALSE;
+}
+
+INT_PTR MainWindow::HandleProgramsMessage(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) {
+    if (message == WM_COMMAND) {
+        int wmId = LOWORD(wParam);
+        if (wmId == IDC_BTN_UNINSTALL || wmId == IDC_BTN_FORCE_REMOVE) {
+            HWND hList = GetDlgItem(hWnd, IDC_LIST_PROGRAMS);
+            int sel = ListView_GetNextItem(hList, -1, LVNI_SELECTED);
+            if (sel != -1 && sel < (int)m_programs.size()) {
+                // Get the real index from item data because of filtering/sorting
+                LVITEMW lvi;
+                lvi.mask = LVIF_PARAM;
+                lvi.iItem = sel;
+                lvi.iSubItem = 0;
+                ListView_GetItem(hList, &lvi);
+                int realIndex = (int)lvi.lParam;
+
+                if (realIndex >= 0 && realIndex < (int)m_programs.size()) {
+                    const ProgramInfo& info = m_programs[realIndex];
+                    if (wmId == IDC_BTN_UNINSTALL) {
+                        RegistryMgr::uninstallProgram(info, nullptr);
+                    } else if (wmId == IDC_BTN_FORCE_REMOVE) {
+                        if (MessageBoxW(hWnd, L"정말로 이 항목을 레지스트리에서 강제로 삭제하시겠습니까?", L"경고", MB_YESNO | MB_ICONWARNING) == IDYES) {
+                            if (RegistryMgr::forceRemoveProgram(info)) {
+                                MessageBoxW(hWnd, L"삭제되었습니다.", L"알림", MB_OK);
+                                PopulateProgramsList(hList);
+                            } else {
+                                MessageBoxW(hWnd, L"삭제 실패.", L"오류", MB_OK | MB_ICONERROR);
+                            }
+                        }
+                    }
+                }
+            } else {
+                MessageBoxW(hWnd, L"프로그램을 선택해주세요.", L"알림", MB_OK);
+            }
+        } else if (wmId == IDC_BTN_PROG_REFRESH) {
+            PopulateProgramsList(GetDlgItem(hWnd, IDC_LIST_PROGRAMS));
+            SetDlgItemTextW(hWnd, IDC_EDIT_PROG_SEARCH, L"");
+        } else if (HIWORD(wParam) == EN_CHANGE && wmId == IDC_EDIT_PROG_SEARCH) {
+            wchar_t searchBuf[256];
+            GetDlgItemTextW(hWnd, IDC_EDIT_PROG_SEARCH, searchBuf, 256);
+            FilterProgramsList(GetDlgItem(hWnd, IDC_LIST_PROGRAMS), searchBuf);
+        }
+    } else if (message == WM_NOTIFY) {
+        LPNMHDR lpnmh = (LPNMHDR)lParam;
+        if (lpnmh->idFrom == IDC_LIST_PROGRAMS) {
+            if (lpnmh->code == NM_RCLICK) {
+                POINT pt;
+                GetCursorPos(&pt);
+                ShowProgramsContextMenu(hWnd, pt);
+            } else if (lpnmh->code == LVN_COLUMNCLICK) {
+                LPNMLISTVIEW pnmv = (LPNMLISTVIEW)lParam;
+                if (m_sortColumn == pnmv->iSubItem) {
+                    m_sortAscending = !m_sortAscending;
+                } else {
+                    m_sortColumn = pnmv->iSubItem;
+                    m_sortAscending = true;
+                }
+                ListView_SortItems(lpnmh->hwndFrom, MainWindow::ListViewCompareProc, (LPARAM)this);
+            }
+        }
+    }
+    return (INT_PTR)FALSE;
+}
+
+int CALLBACK MainWindow::ListViewCompareProc(LPARAM lParam1, LPARAM lParam2, LPARAM lParamSort) {
+    MainWindow* pThis = (MainWindow*)lParamSort;
+    if (lParam1 < 0 || lParam1 >= pThis->m_programs.size() || 
+        lParam2 < 0 || lParam2 >= pThis->m_programs.size()) return 0;
+        
+    const ProgramInfo& a = pThis->m_programs[lParam1];
+    const ProgramInfo& b = pThis->m_programs[lParam2];
+    
+    int result = 0;
+    switch (pThis->m_sortColumn) {
+        case 0: result = a.displayName.compare(b.displayName); break;
+        case 1: result = a.publisher.compare(b.publisher); break;
+        case 2: result = a.displayVersion.compare(b.displayVersion); break;
+        case 3: result = (a.estimatedSize > b.estimatedSize) ? 1 : (a.estimatedSize < b.estimatedSize ? -1 : 0); break;
+        case 4: result = a.installDate.compare(b.installDate); break;
+        case 5: result = (a.isGhost == b.isGhost) ? 0 : (a.isGhost ? 1 : -1); break;
     }
     
-    if (drivesToWipe.isEmpty()) return;
+    return pThis->m_sortAscending ? result : -result;
+}
+
+void MainWindow::PopulateProgramsList(HWND hList) {
+    ListView_DeleteAllItems(hList);
+    m_programs = RegistryMgr::getInstalledPrograms();
+    FilterProgramsList(hList, L"");
+}
+
+void MainWindow::FilterProgramsList(HWND hList, const std::wstring& filter) {
+    ListView_DeleteAllItems(hList);
     
-    QMessageBox::StandardButton reply = QMessageBox::warning(this, "Warning", 
-        "Wiping free space on " + selectedDrive + " can take a significant amount of time and will cause high disk usage.\nContinue?",
-        QMessageBox::Yes | QMessageBox::No);
+    std::wstring lowerFilter = filter;
+    std::transform(lowerFilter.begin(), lowerFilter.end(), lowerFilter.begin(), ::towlower);
+    
+    int row = 0;
+    for (size_t i = 0; i < m_programs.size(); ++i) {
+        const auto& prog = m_programs[i];
         
-    if (reply == QMessageBox::Yes) {
-        btnWipeFreeSpace->setEnabled(false);
-        btnPauseWipe->setVisible(true);
-        btnCancelWipe->setVisible(true);
-        btnPauseWipe->setText("Pause");
-        btnPauseWipe->setEnabled(true);
-        m_shredState = ShredState::Running;
+        std::wstring nameLower = prog.displayName;
+        std::transform(nameLower.begin(), nameLower.end(), nameLower.begin(), ::towlower);
         
-        bool allSuccess = true;
+        if (!lowerFilter.empty() && nameLower.find(lowerFilter) == std::wstring::npos) {
+            continue; // Skip if filter doesn't match
+        }
         
-        for (const QString& currentDrive : drivesToWipe) {
-            if (m_shredState == ShredState::Cancelled) break;
-            
-            progressBar->setValue(0);
-            lblStatus->setText("Starting wipe process on " + currentDrive + "...");
-            
-            QElapsedTimer timer;
-            timer.start();
-            
-            auto progressCallback = [this, &timer, currentDrive](int progress) {
-                this->progressBar->setValue(progress);
-                if (progress > 0 && progress < 100) {
-                    if (m_shredState == ShredState::Paused) {
-                        this->lblStatus->setText("Wiping Paused (" + currentDrive + ")");
-                    } else {
-                        qint64 elapsedMs = timer.elapsed();
-                        qint64 totalEstimatedMs = (elapsedMs * 100) / progress;
-                        qint64 remainingMs = totalEstimatedMs - elapsedMs;
-                        int remainingSec = remainingMs / 1000;
-                        int min = remainingSec / 60;
-                        int sec = remainingSec % 60;
-                        this->lblStatus->setText(QString("Wiping Free Space on %1... %2% (ETA: %3m %4s)").arg(currentDrive).arg(progress).arg(min).arg(sec, 2, 10, QChar('0')));
-                    }
-                } else if (progress == 100) {
-                    this->lblStatus->setText("Finalizing " + currentDrive + "... (Flushing data to disk, please wait)");
+        LVITEMW lvi = {0};
+        lvi.mask = LVIF_TEXT | LVIF_PARAM;
+        lvi.iItem = row;
+        lvi.iSubItem = 0;
+        lvi.pszText = (LPWSTR)prog.displayName.c_str();
+        lvi.lParam = static_cast<LPARAM>(i); // Store original index
+        ListView_InsertItem(hList, &lvi);
+        
+        ListView_SetItemText(hList, row, 1, (LPWSTR)prog.publisher.c_str());
+        ListView_SetItemText(hList, row, 2, (LPWSTR)prog.displayVersion.c_str());
+        
+        auto formatWithCommas = [](DWORD value) -> std::wstring {
+            std::wstring s = std::to_wstring(value);
+            int n = (int)s.length() - 3;
+            while (n > 0) {
+                s.insert(n, L",");
+                n -= 3;
+            }
+            return s;
+        };
+
+        std::wstring sizeStr = L"";
+        if (prog.estimatedSize > 0) {
+            sizeStr = formatWithCommas(prog.estimatedSize) + L" KB";
+        }
+        
+        std::wstring dateStr = prog.installDate;
+        if (dateStr.length() == 8) {
+            dateStr = dateStr.substr(0, 4) + L"-" + dateStr.substr(4, 2) + L"-" + dateStr.substr(6, 2);
+        }
+        
+        ListView_SetItemText(hList, row, 3, (LPWSTR)sizeStr.c_str());
+        ListView_SetItemText(hList, row, 4, (LPWSTR)dateStr.c_str());
+        ListView_SetItemText(hList, row, 5, (LPWSTR)(prog.isGhost ? L"Yes" : L"No"));
+        
+        row++;
+    }
+}
+
+void MainWindow::ShowProgramsContextMenu(HWND hWnd, POINT pt) {
+    HWND hList = GetDlgItem(hWnd, IDC_LIST_PROGRAMS);
+    int sel = ListView_GetNextItem(hList, -1, LVNI_SELECTED);
+    if (sel == -1) return;
+    
+    HMENU hMenu = CreatePopupMenu();
+    InsertMenuW(hMenu, -1, MF_BYPOSITION | MF_STRING, IDC_BTN_UNINSTALL, L"Uninstall");
+    InsertMenuW(hMenu, -1, MF_BYPOSITION | MF_STRING, IDC_BTN_FORCE_REMOVE, L"Force Remove (Ghost)");
+    
+    int ret = TrackPopupMenu(hMenu, TPM_RETURNCMD | TPM_NONOTIFY, pt.x, pt.y, 0, hWnd, NULL);
+    DestroyMenu(hMenu);
+    
+    if (ret != 0) {
+        SendMessageW(hWnd, WM_COMMAND, MAKEWPARAM(ret, 0), 0);
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Shredder Tab
+// -----------------------------------------------------------------------------
+INT_PTR CALLBACK MainWindow::ShredderDlgProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) {
+    MainWindow* pThis = nullptr;
+    if (message == WM_INITDIALOG) {
+        pThis = (MainWindow*)lParam;
+        SetWindowLongPtr(hWnd, GWLP_USERDATA, (LONG_PTR)pThis);
+        
+        // Init Combobox
+        HWND hCombo = GetDlgItem(hWnd, IDC_CMB_SHRED_PASSES);
+        ComboBox_AddString(hCombo, L"Fast (0 Passes)");
+        ComboBox_AddString(hCombo, L"Standard (1 Pass)");
+        ComboBox_AddString(hCombo, L"DoD 5220.22-M (3 Passes)");
+        ComboBox_AddString(hCombo, L"Gutmann (7 Passes)");
+        ComboBox_SetCurSel(hCombo, 1); // Default to 1 pass
+        
+        // Init Wipe Drive Combobox
+        pThis->PopulateDrivesCombo(GetDlgItem(hWnd, IDC_CMB_WIPE_DRIVE));
+        CheckDlgButton(hWnd, IDC_CHK_MFT_ONLY, BST_CHECKED);
+        
+        return (INT_PTR)TRUE;
+    } else {
+        pThis = (MainWindow*)GetWindowLongPtr(hWnd, GWLP_USERDATA);
+    }
+
+    if (pThis) return pThis->HandleShredderMessage(hWnd, message, wParam, lParam);
+    return (INT_PTR)FALSE;
+}
+
+INT_PTR MainWindow::HandleShredderMessage(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) {
+    if (message == WM_COMMAND) {
+        int wmId = LOWORD(wParam);
+        
+        if (wmId == IDC_BTN_SHRED_FILE || wmId == IDC_BTN_SHRED_FOLDER) {
+            IFileOpenDialog* pFileOpen;
+            if (SUCCEEDED(CoCreateInstance(CLSID_FileOpenDialog, NULL, CLSCTX_ALL, IID_IFileOpenDialog, reinterpret_cast<void**>(&pFileOpen)))) {
+                if (wmId == IDC_BTN_SHRED_FOLDER) {
+                    DWORD dwOptions;
+                    pFileOpen->GetOptions(&dwOptions);
+                    pFileOpen->SetOptions(dwOptions | FOS_PICKFOLDERS);
                 }
-                QApplication::processEvents();
+                
+                if (SUCCEEDED(pFileOpen->Show(hWnd))) {
+                    IShellItem* pItem;
+                    if (SUCCEEDED(pFileOpen->GetResult(&pItem))) {
+                        PWSTR pszFilePath;
+                        if (SUCCEEDED(pItem->GetDisplayName(SIGDN_FILESYSPATH, &pszFilePath))) {
+                            std::wstring path = pszFilePath;
+                            CoTaskMemFree(pszFilePath);
+                            
+                            int sel = ComboBox_GetCurSel(GetDlgItem(hWnd, IDC_CMB_SHRED_PASSES));
+                            ShredPass passes = ShredPass::Pass_1;
+                            if (sel == 0) passes = ShredPass::Pass_0;
+                            else if (sel == 2) passes = ShredPass::Pass_3;
+                            else if (sel == 3) passes = ShredPass::Pass_7;
+
+                            std::wstring confirmMsg = L"정말로 다음 항목을 복구 불가능하게 파쇄하시겠습니까?\n" + path;
+                            if (MessageBoxW(hWnd, confirmMsg.c_str(), L"경고", MB_YESNO | MB_ICONWARNING) == IDYES) {
+                                std::thread([hWnd, path, passes, wmId]() {
+                                    FileShredder::shredPath(path, passes, [hWnd](int p, const std::wstring&) {
+                                        SendDlgItemMessage(hWnd, IDC_PROG_SHRED, PBM_SETPOS, p, 0);
+                                    });
+                                    MessageBoxW(hWnd, L"파쇄 완료.", L"알림", MB_OK);
+                                    SendDlgItemMessage(hWnd, IDC_PROG_SHRED, PBM_SETPOS, 0, 0);
+                                }).detach();
+                            }
+                        }
+                        pItem->Release();
+                    }
+                }
+                pFileOpen->Release();
+            }
+        } else if (wmId == IDC_BTN_WIPE_FREESPACE) {
+            HWND hCombo = GetDlgItem(hWnd, IDC_CMB_WIPE_DRIVE);
+            int drvSel = ComboBox_GetCurSel(hCombo);
+            wchar_t driveStr[128];
+            ComboBox_GetLBText(hCombo, drvSel, driveStr);
+            
+            bool mftOnly = (IsDlgButtonChecked(hWnd, IDC_CHK_MFT_ONLY) == BST_CHECKED);
+            WipeMode mode = mftOnly ? WipeMode::MftOnly : WipeMode::FullWipe;
+            
+            std::wstring driveW(driveStr);
+            std::thread([hWnd, driveW, mode]() {
+                if (driveW.find(L"All Drives") != std::wstring::npos) {
+                    DWORD drives = GetLogicalDrives();
+                    for (int i = 0; i < 26; ++i) {
+                        if (drives & (1 << i)) {
+                            std::wstring drv = { (wchar_t)('A' + i), L':', L'\\', L'\0' };
+                            FileShredder::wipeFreeSpace(drv, mode, [hWnd](int p) {
+                                SendDlgItemMessage(hWnd, IDC_PROG_SHRED, PBM_SETPOS, p, 0);
+                            }, nullptr);
+                        }
+                    }
+                } else {
+                    FileShredder::wipeFreeSpace(driveW, mode, [hWnd](int p) {
+                        SendDlgItemMessage(hWnd, IDC_PROG_SHRED, PBM_SETPOS, p, 0);
+                    }, nullptr);
+                }
+                MessageBoxW(hWnd, L"빈 공간 삭제 완료.", L"알림", MB_OK);
+                SendDlgItemMessage(hWnd, IDC_PROG_SHRED, PBM_SETPOS, 0, 0);
+            }).detach();
+        }
+    }
+    return (INT_PTR)FALSE;
+}
+
+// -----------------------------------------------------------------------------
+// Browser Cleaner Tab
+// -----------------------------------------------------------------------------
+INT_PTR CALLBACK MainWindow::BrowserDlgProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) {
+    MainWindow* pThis = nullptr;
+    if (message == WM_INITDIALOG) {
+        pThis = (MainWindow*)lParam;
+        SetWindowLongPtr(hWnd, GWLP_USERDATA, (LONG_PTR)pThis);
+        
+        CheckDlgButton(hWnd, IDC_CHK_CHROME, BST_CHECKED);
+        CheckDlgButton(hWnd, IDC_CHK_EDGE, BST_CHECKED);
+        CheckDlgButton(hWnd, IDC_CHK_HISTORY, BST_CHECKED);
+        
+        return (INT_PTR)TRUE;
+    } else {
+        pThis = (MainWindow*)GetWindowLongPtr(hWnd, GWLP_USERDATA);
+    }
+
+    if (pThis) return pThis->HandleBrowserMessage(hWnd, message, wParam, lParam);
+    return (INT_PTR)FALSE;
+}
+
+INT_PTR MainWindow::HandleBrowserMessage(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) {
+    if (message == WM_COMMAND && LOWORD(wParam) == IDC_BTN_CLEAN_BROWSER) {
+        std::vector<BrowserType> browsers;
+        if (IsDlgButtonChecked(hWnd, IDC_CHK_CHROME) == BST_CHECKED) browsers.push_back(BrowserType::Chrome);
+        if (IsDlgButtonChecked(hWnd, IDC_CHK_EDGE) == BST_CHECKED) browsers.push_back(BrowserType::Edge);
+        if (IsDlgButtonChecked(hWnd, IDC_CHK_FIREFOX) == BST_CHECKED) browsers.push_back(BrowserType::Firefox);
+        
+        std::vector<BrowserDataType> dataTypes;
+        if (IsDlgButtonChecked(hWnd, IDC_CHK_CACHE) == BST_CHECKED) dataTypes.push_back(BrowserDataType::Cache);
+        if (IsDlgButtonChecked(hWnd, IDC_CHK_COOKIES) == BST_CHECKED) dataTypes.push_back(BrowserDataType::Cookies);
+        if (IsDlgButtonChecked(hWnd, IDC_CHK_HISTORY) == BST_CHECKED) dataTypes.push_back(BrowserDataType::History);
+        if (IsDlgButtonChecked(hWnd, IDC_CHK_DOWNLOADS) == BST_CHECKED) dataTypes.push_back(BrowserDataType::Downloads);
+        
+        if (browsers.empty() || dataTypes.empty()) {
+            MessageBoxW(hWnd, L"최소 하나 이상의 브라우저와 데이터 종류를 선택해주세요.", L"알림", MB_OK | MB_ICONWARNING);
+            return (INT_PTR)TRUE;
+        }
+
+        EnableWindow(GetDlgItem(hWnd, IDC_BTN_CLEAN_BROWSER), FALSE);
+        
+        std::thread([this, hWnd, browsers, dataTypes]() {
+            for (auto b : browsers) {
+                BrowserCleaner::cleanBrowserData(b, dataTypes, ShredPass::Pass_1, [hWnd](int progress) {
+                    SendDlgItemMessage(hWnd, IDC_PROG_BROWSER, PBM_SETPOS, progress, 0);
+                });
+            }
+            SendDlgItemMessage(hWnd, IDC_PROG_BROWSER, PBM_SETPOS, 100, 0);
+            MessageBoxW(hWnd, L"브라우저 청소가 완료되었습니다.", L"알림", MB_OK | MB_ICONINFORMATION);
+            EnableWindow(GetDlgItem(hWnd, IDC_BTN_CLEAN_BROWSER), TRUE);
+            SendDlgItemMessage(hWnd, IDC_PROG_BROWSER, PBM_SETPOS, 0, 0);
+        }).detach();
+    }
+    return (INT_PTR)FALSE;
+}
+
+// -----------------------------------------------------------------------------
+// Recovery Tab
+// -----------------------------------------------------------------------------
+INT_PTR CALLBACK MainWindow::RecoveryDlgProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) {
+    MainWindow* pThis = nullptr;
+    if (message == WM_INITDIALOG) {
+        pThis = (MainWindow*)lParam;
+        SetWindowLongPtr(hWnd, GWLP_USERDATA, (LONG_PTR)pThis);
+        
+        pThis->PopulateDrivesCombo(GetDlgItem(hWnd, IDC_CMB_DRIVE));
+        
+        HWND hTree = GetDlgItem(hWnd, IDC_TREE_RECOVERY);
+        // Set extended style if needed, but standard tree view is fine.
+        
+        return (INT_PTR)TRUE;
+    } else {
+        pThis = (MainWindow*)GetWindowLongPtr(hWnd, GWLP_USERDATA);
+    }
+
+    if (pThis) {
+        if (message == WM_NOTIFY) {
+            LPNMHDR lpnmh = (LPNMHDR)lParam;
+            if (lpnmh->idFrom == IDC_TREE_RECOVERY) {
+                if (lpnmh->code == NM_CUSTOMDRAW) {
+                    LPNMTVCUSTOMDRAW pNMTVCD = (LPNMTVCUSTOMDRAW)lParam;
+                    switch (pNMTVCD->nmcd.dwDrawStage) {
+                    case CDDS_PREPAINT:
+                        return CDRF_NOTIFYITEMDRAW;
+                    case CDDS_ITEMPREPAINT: {
+                        HTREEITEM hItem = (HTREEITEM)pNMTVCD->nmcd.dwItemSpec;
+                        TVITEMW tvi;
+                        tvi.mask = TVIF_PARAM;
+                        tvi.hItem = hItem;
+                        TreeView_GetItem(GetDlgItem(hWnd, IDC_TREE_RECOVERY), &tvi);
+                        
+                        if (tvi.lParam != -1) { // It's a file
+                            int index = (int)tvi.lParam;
+                            if (index >= 0 && index < pThis->m_recoveredFiles.size()) {
+                                const auto& rf = pThis->m_recoveredFiles[index];
+                                if (rf.recoverability == L"High") {
+                                    pNMTVCD->clrText = RGB(0, 128, 0); // Green
+                                } else if (rf.recoverability == L"Low") {
+                                    pNMTVCD->clrText = RGB(128, 128, 0); // Yellow/Olive
+                                } else {
+                                    pNMTVCD->clrText = RGB(255, 0, 0); // Red
+                                }
+                            }
+                        } else {
+                            // Folder
+                            pNMTVCD->clrText = RGB(0, 0, 0); // Black
+                        }
+                        return CDRF_DODEFAULT;
+                    }
+                    }
+                } else if (lpnmh->code == NM_RCLICK) {
+                    POINT pt;
+                    GetCursorPos(&pt);
+                    pThis->ShowRecoveryContextMenu(hWnd, pt);
+                }
+            }
+        }
+        return pThis->HandleRecoveryMessage(hWnd, message, wParam, lParam);
+    }
+    return (INT_PTR)FALSE;
+}
+
+INT_PTR MainWindow::HandleRecoveryMessage(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) {
+    if (message == WM_COMMAND) {
+        int wmId = LOWORD(wParam);
+        if (wmId == IDC_BTN_SCAN) {
+            HWND hCombo = GetDlgItem(hWnd, IDC_CMB_DRIVE);
+            int sel = ComboBox_GetCurSel(hCombo);
+            if (sel == CB_ERR) return (INT_PTR)TRUE;
+            
+            wchar_t driveStr[128];
+            ComboBox_GetLBText(hCombo, sel, driveStr);
+            std::wstring drive(driveStr);
+            
+            EnableWindow(GetDlgItem(hWnd, IDC_BTN_SCAN), FALSE);
+            TreeView_DeleteAllItems(GetDlgItem(hWnd, IDC_TREE_RECOVERY));
+            SetDlgItemTextW(hWnd, IDC_LBL_REC_STATUS, L"Scanning...");
+            
+            std::thread([this, hWnd, drive]() {
+                m_recoveredFiles.clear();
+                
+                auto progressCallback = [hWnd](int p, const std::wstring& msg) {
+                    SendDlgItemMessage(hWnd, IDC_PROG_REC, PBM_SETPOS, p, 0);
+                    SetDlgItemTextW(hWnd, IDC_LBL_REC_STATUS, msg.c_str());
+                };
+                
+                if (drive.find(L"All Drives") != std::wstring::npos) {
+                    DWORD drives = GetLogicalDrives();
+                    for (int i = 0; i < 26; ++i) {
+                        if (drives & (1 << i)) {
+                            std::wstring drv = { (wchar_t)('A' + i), L':', L'\\', L'\0' };
+                            NtfsRecovery ntfs;
+                            if (!ntfs.scanDrive(drv, m_recoveredFiles, progressCallback)) {
+                                FatRecovery fat;
+                                fat.scanDrive(drv, m_recoveredFiles, progressCallback);
+                            }
+                        }
+                    }
+                } else {
+                    NtfsRecovery ntfs;
+                    if (!ntfs.scanDrive(drive, m_recoveredFiles, progressCallback)) {
+                        FatRecovery fat;
+                        fat.scanDrive(drive, m_recoveredFiles, progressCallback);
+                    }
+                }
+                
+                // Sort by recoverability
+                std::sort(m_recoveredFiles.begin(), m_recoveredFiles.end(), [](const RecoverableFile& a, const RecoverableFile& b) {
+                    if (a.recoverability == L"High" && b.recoverability != L"High") return true;
+                    return false;
+                });
+                
+                PopulateRecoveryTree(GetDlgItem(hWnd, IDC_TREE_RECOVERY));
+                EnableWindow(GetDlgItem(hWnd, IDC_BTN_SCAN), TRUE);
+                SetDlgItemTextW(hWnd, IDC_LBL_REC_STATUS, L"Scan complete.");
+                SendDlgItemMessage(hWnd, IDC_PROG_REC, PBM_SETPOS, 0, 0);
+            }).detach();
+        } else if (wmId == IDC_BTN_RECOVER) {
+            HWND hTree = GetDlgItem(hWnd, IDC_TREE_RECOVERY);
+            HTREEITEM hItem = TreeView_GetSelection(hTree);
+            if (!hItem) return (INT_PTR)TRUE;
+            
+            TVITEMW tvi;
+            tvi.mask = TVIF_PARAM;
+            tvi.hItem = hItem;
+            TreeView_GetItem(hTree, &tvi);
+            
+            if (tvi.lParam == -1) return (INT_PTR)TRUE; // Folder
+            int sel = (int)tvi.lParam;
+            
+            if (sel >= 0 && sel < (int)m_recoveredFiles.size()) {
+                const auto& rf = m_recoveredFiles[sel];
+                
+                IFileOpenDialog* pFolderOpen;
+                if (SUCCEEDED(CoCreateInstance(CLSID_FileOpenDialog, NULL, CLSCTX_ALL, IID_IFileOpenDialog, reinterpret_cast<void**>(&pFolderOpen)))) {
+                    DWORD dwOptions;
+                    pFolderOpen->GetOptions(&dwOptions);
+                    pFolderOpen->SetOptions(dwOptions | FOS_PICKFOLDERS);
+                    
+                    if (SUCCEEDED(pFolderOpen->Show(hWnd))) {
+                        IShellItem* pItem;
+                        if (SUCCEEDED(pFolderOpen->GetResult(&pItem))) {
+                            PWSTR pszFolderPath;
+                            if (SUCCEEDED(pItem->GetDisplayName(SIGDN_FILESYSPATH, &pszFolderPath))) {
+                                std::wstring destFolder = pszFolderPath;
+                                CoTaskMemFree(pszFolderPath);
+                                
+                                std::wstring destPath = destFolder + L"\\" + rf.name;
+                                
+                                // Need original drive path
+                                HWND hCombo = GetDlgItem(hWnd, IDC_CMB_DRIVE);
+                                int drvSel = ComboBox_GetCurSel(hCombo);
+                                wchar_t driveStr[10];
+                                ComboBox_GetLBText(hCombo, drvSel, driveStr);
+                                
+                                NtfsRecovery ntfs;
+                                if (ntfs.recoverFile(driveStr, rf, destPath)) {
+                                    MessageBoxW(hWnd, L"파일 복구가 완료되었습니다.", L"성공", MB_OK);
+                                } else {
+                                    MessageBoxW(hWnd, L"파일 복구에 실패했습니다. (지원되지 않는 파일 시스템이거나 덮어써짐)", L"실패", MB_OK | MB_ICONERROR);
+                                }
+                            }
+                            pItem->Release();
+                        }
+                    }
+                    pFolderOpen->Release();
+                }
+            }
+        } else if (HIWORD(wParam) == EN_CHANGE && wmId == IDC_EDIT_REC_SEARCH) {
+            wchar_t searchBuf[256];
+            GetDlgItemTextW(hWnd, IDC_EDIT_REC_SEARCH, searchBuf, 256);
+            FilterRecoveryTree(GetDlgItem(hWnd, IDC_TREE_RECOVERY), searchBuf);
+        }
+    }
+    return (INT_PTR)FALSE;
+}
+
+void MainWindow::PopulateDrivesCombo(HWND hCombo) {
+    ComboBox_AddString(hCombo, L"모든 드라이브 (All Drives)");
+    DWORD drives = GetLogicalDrives();
+    for (int i = 0; i < 26; ++i) {
+        if (drives & (1 << i)) {
+            wchar_t drive[] = { (wchar_t)('A' + i), L':', L'\\', L'\0' };
+            ComboBox_AddString(hCombo, drive);
+        }
+    }
+    ComboBox_SetCurSel(hCombo, 0);
+}
+
+static HTREEITEM InsertTreeItem(HWND hTree, HTREEITEM hParent, const std::wstring& text, LPARAM lParam) {
+    TVINSERTSTRUCTW tvis = {0};
+    tvis.hParent = hParent;
+    tvis.hInsertAfter = TVI_LAST;
+    tvis.item.mask = TVIF_TEXT | TVIF_PARAM;
+    tvis.item.pszText = (LPWSTR)text.c_str();
+    tvis.item.lParam = lParam;
+    return TreeView_InsertItem(hTree, &tvis);
+}
+
+void MainWindow::PopulateRecoveryTree(HWND hTree) {
+    TreeView_DeleteAllItems(hTree);
+    FilterRecoveryTree(hTree, L"");
+}
+
+void MainWindow::FilterRecoveryTree(HWND hTree, const std::wstring& filter) {
+    TreeView_DeleteAllItems(hTree);
+    
+    std::wstring lowerFilter = filter;
+    std::transform(lowerFilter.begin(), lowerFilter.end(), lowerFilter.begin(), ::towlower);
+    
+    std::map<std::wstring, HTREEITEM> folderMap;
+    
+    for (size_t i = 0; i < m_recoveredFiles.size(); ++i) {
+        const auto& rf = m_recoveredFiles[i];
+        
+        std::wstring nameLower = rf.name;
+        std::transform(nameLower.begin(), nameLower.end(), nameLower.begin(), ::towlower);
+        
+        if (!lowerFilter.empty() && nameLower.find(lowerFilter) == std::wstring::npos) {
+            continue;
+        }
+        
+        // Split path to create folders
+        std::wstring path = rf.fullPath;
+        std::wstring currentFolder = L"";
+        HTREEITEM hParent = TVI_ROOT;
+        
+        size_t pos = 0;
+        while ((pos = path.find(L'/')) != std::wstring::npos) {
+            std::wstring folderName = path.substr(0, pos);
+            if (!folderName.empty()) {
+                currentFolder += folderName + L"/";
+                if (folderMap.find(currentFolder) == folderMap.end()) {
+                    hParent = InsertTreeItem(hTree, hParent, folderName, -1);
+                    folderMap[currentFolder] = hParent;
+                } else {
+                    hParent = folderMap[currentFolder];
+                }
+            }
+            path.erase(0, pos + 1);
+        }
+        
+        // Insert file
+        std::wstring displayStr = rf.name + L" (" + rf.recoverability + L", " + std::to_wstring(rf.size) + L" bytes)";
+        InsertTreeItem(hTree, hParent, displayStr, static_cast<LPARAM>(i));
+    }
+}
+
+void MainWindow::ShowRecoveryContextMenu(HWND hWnd, POINT pt) {
+    HWND hTree = GetDlgItem(hWnd, IDC_TREE_RECOVERY);
+    
+    // Convert to client coordinates to get hit test
+    POINT ptClient = pt;
+    ScreenToClient(hTree, &ptClient);
+    
+    TVHITTESTINFO tvht = {0};
+    tvht.pt = ptClient;
+    HTREEITEM hItem = TreeView_HitTest(hTree, &tvht);
+    
+    if (hItem) {
+        TreeView_SelectItem(hTree, hItem);
+        
+        TVITEMW tvi;
+        tvi.mask = TVIF_PARAM;
+        tvi.hItem = hItem;
+        TreeView_GetItem(hTree, &tvi);
+        
+        if (tvi.lParam != -1) { // It's a file
+            HMENU hMenu = CreatePopupMenu();
+            InsertMenuW(hMenu, -1, MF_BYPOSITION | MF_STRING, IDC_BTN_RECOVER, L"선택 항목 복구 (Recover)");
+            
+            int ret = TrackPopupMenu(hMenu, TPM_RETURNCMD | TPM_NONOTIFY, pt.x, pt.y, 0, hWnd, NULL);
+            DestroyMenu(hMenu);
+            
+            if (ret != 0) {
+                SendMessageW(hWnd, WM_COMMAND, MAKEWPARAM(ret, 0), 0);
+            }
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Config Dialog (Settings)
+// -----------------------------------------------------------------------------
+INT_PTR CALLBACK MainWindow::ConfigDlgProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) {
+    if (message == WM_INITDIALOG) {
+        HKEY hKey;
+        if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\clearMax", 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
+            DWORD val;
+            DWORD size = sizeof(DWORD);
+            
+            auto loadCheck = [&](const wchar_t* name, int id, bool defaultVal) {
+                val = 0; size = sizeof(DWORD);
+                if (RegQueryValueExW(hKey, name, NULL, NULL, (LPBYTE)&val, &size) == ERROR_SUCCESS)
+                    CheckDlgButton(hWnd, id, val ? BST_CHECKED : BST_UNCHECKED);
+                else
+                    CheckDlgButton(hWnd, id, defaultVal ? BST_CHECKED : BST_UNCHECKED);
             };
             
-            auto cancelCheck = [this]() -> bool {
-                QApplication::processEvents();
-                while (m_shredState == ShredState::Paused) {
-                    // Yield to event loop while paused
-                    QThread::msleep(50);
-                    QApplication::processEvents();
-                }
-                return m_shredState == ShredState::Cancelled;
-            };
+            loadCheck(L"CfgHistory", IDC_CHK_CFG_HISTORY, true);
+            loadCheck(L"CfgCache", IDC_CHK_CFG_CACHE, false);
+            loadCheck(L"CfgCookies", IDC_CHK_CFG_COOKIES, false);
+            loadCheck(L"CfgDownloads", IDC_CHK_CFG_DOWNLOADS, false);
+            loadCheck(L"CfgAllDrives", IDC_CHK_CFG_ALL_DRIVES, true);
+            loadCheck(L"CfgMftOnly", IDC_CHK_CFG_MFT_ONLY, true);
             
-            WipeMode mode = static_cast<WipeMode>(comboWipeMode->currentData().toInt());
-            bool success = FileShredder::wipeFreeSpace(currentDrive, mode, progressCallback, cancelCheck);
-            if (!success) {
-                allSuccess = false;
-            }
-        }
-        
-        btnWipeFreeSpace->setEnabled(true);
-        btnPauseWipe->setVisible(false);
-        btnCancelWipe->setVisible(false);
-        
-        if (m_shredState == ShredState::Cancelled) {
-            lblStatus->setText("Wipe Cancelled");
-            QMessageBox::information(this, "Cancelled", "Wiping process was stopped by user.");
-        } else if (allSuccess) {
-            lblStatus->setText("Ready");
-            QMessageBox::information(this, "Success", "Free space wiped successfully.");
+            RegCloseKey(hKey);
         } else {
-            lblStatus->setText("Error");
-            QMessageBox::warning(this, "Error", "Failed to complete free space wipe on some drives.");
+            CheckDlgButton(hWnd, IDC_CHK_CFG_HISTORY, BST_CHECKED);
+            CheckDlgButton(hWnd, IDC_CHK_CFG_CACHE, BST_UNCHECKED);
+            CheckDlgButton(hWnd, IDC_CHK_CFG_COOKIES, BST_UNCHECKED);
+            CheckDlgButton(hWnd, IDC_CHK_CFG_DOWNLOADS, BST_UNCHECKED);
+            CheckDlgButton(hWnd, IDC_CHK_CFG_ALL_DRIVES, BST_CHECKED);
+            CheckDlgButton(hWnd, IDC_CHK_CFG_MFT_ONLY, BST_CHECKED);
         }
-    }
-}
-
-void MainWindow::pauseOperation() {
-    if (m_shredState == ShredState::Running) {
-        m_shredState = ShredState::Paused;
-        btnPauseShred->setText("Resume");
-        btnPauseWipe->setText("Resume");
-    } else if (m_shredState == ShredState::Paused) {
-        m_shredState = ShredState::Running;
-        btnPauseShred->setText("Pause");
-        btnPauseWipe->setText("Pause");
-    }
-}
-
-void MainWindow::cancelOperation() {
-    m_shredState = ShredState::Cancelled;
-    btnPauseShred->setEnabled(false);
-    btnPauseWipe->setEnabled(false);
-}
-
-void MainWindow::cleanBrowserData() {
-    QList<BrowserDataType> types;
-    if (chkHistory->isChecked()) types.append(BrowserDataType::History);
-    if (chkCookies->isChecked()) types.append(BrowserDataType::Cookies);
-    if (chkCache->isChecked()) types.append(BrowserDataType::Cache);
-    
-    if (types.isEmpty()) {
-        QMessageBox::warning(this, "Error", "Please select at least one data type to shred.");
-        return;
-    }
-    
-    QMessageBox::StandardButton reply = QMessageBox::critical(this, "Warning", 
-        "Selected browser data will be securely shredded and cannot be recovered.\nEnsure browsers are closed before proceeding.\n\nContinue?",
-        QMessageBox::Yes | QMessageBox::No);
-        
-    if (reply == QMessageBox::Yes) {
-        btnCleanBrowsers->setEnabled(false);
-        progressBar->setValue(0);
-        ShredPass passes = static_cast<ShredPass>(comboPasses->currentData().toInt()); // Use the pass combo from Shredder tab
-        
-        if (chkChrome->isChecked()) BrowserCleaner::cleanBrowserData(BrowserType::Chrome, types, passes, [this](int p){ progressBar->setValue(p); QApplication::processEvents(); });
-        if (chkEdge->isChecked()) BrowserCleaner::cleanBrowserData(BrowserType::Edge, types, passes, [this](int p){ progressBar->setValue(p); QApplication::processEvents(); });
-        if (chkFirefox->isChecked()) BrowserCleaner::cleanBrowserData(BrowserType::Firefox, types, passes, [this](int p){ progressBar->setValue(p); QApplication::processEvents(); });
-        
-        progressBar->setValue(100);
-        btnCleanBrowsers->setEnabled(true);
-        QMessageBox::information(this, "Success", "Browser data securely shredded.");
-    }
-}
-
-void MainWindow::scanRecoveryDrive() {
-    if (comboRecoveryDrives->currentIndex() == -1) return;
-    
-    btnScanDrive->setEnabled(false);
-    btnRecoverSelected->setEnabled(false);
-    recoveryTree->clear();
-    m_recoverableFiles.clear();
-        this->lblStatus->setText("Detecting file system...");
-    this->progressBar->setValue(0);
-    QApplication::processEvents();
-
-    QString drivePath = comboRecoveryDrives->currentText();
-    QString driveRoot = drivePath.left(3);
-    
-    wchar_t fsNameBuf[MAX_PATH];
-    GetVolumeInformationW(reinterpret_cast<const wchar_t*>(driveRoot.utf16()), NULL, 0, NULL, NULL, NULL, fsNameBuf, MAX_PATH);
-    QString fsName = QString::fromWCharArray(fsNameBuf);
-    
-    bool isFat = fsName.contains("FAT", Qt::CaseInsensitive); // Covers FAT, FAT32, exFAT
-    
-    QThread* thread = QThread::create([this, drivePath, isFat]() {
-        bool success = false;
-        
-        auto progressCallback = [this](int progress, const QString& statusMsg) {
-            QMetaObject::invokeMethod(this, [this, progress, statusMsg]() {
-                this->progressBar->setValue(progress);
-                this->lblStatus->setText(statusMsg);
-                QApplication::processEvents();
-            }, Qt::QueuedConnection);
-        };
-        
-        if (isFat) {
-            FatRecovery fat;
-            success = fat.scanDrive(drivePath, m_recoverableFiles, progressCallback);
-        } else {
-            NtfsRecovery ntfs;
-            success = ntfs.scanDrive(drivePath, m_recoverableFiles, progressCallback);
-        }
-        
-        QMetaObject::invokeMethod(this, [this, success]() {
-            if (success) {
-                populateRecoveryTree();
-                QMessageBox::information(this, "Scan Complete", QString("Found %1 deleted files.").arg(m_recoverableFiles.size()));
-                this->lblStatus->setText("Scan complete.");
-            } else {
-                QMessageBox::critical(this, "Scan Failed", "Failed to scan the drive. Ensure the program is running as Administrator.");
-                this->lblStatus->setText("Scan failed.");
-                this->progressBar->setValue(0);
+        return (INT_PTR)TRUE;
+    } else if (message == WM_COMMAND) {
+        if (LOWORD(wParam) == IDC_BTN_SAVE_CONFIG) {
+            HKEY hKey;
+            if (RegCreateKeyExW(HKEY_CURRENT_USER, L"Software\\clearMax", 0, NULL, 0, KEY_WRITE, NULL, &hKey, NULL) == ERROR_SUCCESS) {
+                auto saveCheck = [&](const wchar_t* name, int id) {
+                    DWORD v = IsDlgButtonChecked(hWnd, id) == BST_CHECKED ? 1 : 0;
+                    RegSetValueExW(hKey, name, 0, REG_DWORD, (const BYTE*)&v, sizeof(DWORD));
+                };
+                
+                saveCheck(L"CfgHistory", IDC_CHK_CFG_HISTORY);
+                saveCheck(L"CfgCache", IDC_CHK_CFG_CACHE);
+                saveCheck(L"CfgCookies", IDC_CHK_CFG_COOKIES);
+                saveCheck(L"CfgDownloads", IDC_CHK_CFG_DOWNLOADS);
+                saveCheck(L"CfgAllDrives", IDC_CHK_CFG_ALL_DRIVES);
+                saveCheck(L"CfgMftOnly", IDC_CHK_CFG_MFT_ONLY);
+                
+                RegCloseKey(hKey);
             }
-            this->btnScanDrive->setEnabled(true);
-        }, Qt::QueuedConnection);
-    });
-    
-    thread->start();
-}
-
-void MainWindow::populateRecoveryTree() {
-    recoveryTree->setSortingEnabled(false);
-    recoveryTree->clear();
-    
-    QHash<QString, QTreeWidgetItem*> folderNodes;
-    
-    for (int i = 0; i < m_recoverableFiles.size(); ++i) {
-        const RecoverableFile& rf = m_recoverableFiles[i];
-        
-        // Construct tree hierarchy
-        QStringList parts = rf.fullPath.split('/', Qt::SkipEmptyParts);
-        QTreeWidgetItem* parentItem = nullptr;
-        QString currentPath = "";
-        
-        for (const QString& part : parts) {
-            currentPath += "/" + part;
-            if (!folderNodes.contains(currentPath)) {
-                SortTreeItem* node = new SortTreeItem(QStringList() << part << "" << "" << "");
-                node->setIcon(0, QApplication::style()->standardIcon(QStyle::SP_DirIcon));
-                if (parentItem) {
-                    parentItem->addChild(node);
-                } else {
-                    recoveryTree->addTopLevelItem(node);
-                }
-                folderNodes.insert(currentPath, node);
-                parentItem = node;
-            } else {
-                parentItem = folderNodes.value(currentPath);
-            }
+            EndDialog(hWnd, LOWORD(wParam));
+            return (INT_PTR)TRUE;
+        } else if (LOWORD(wParam) == IDCANCEL) {
+            EndDialog(hWnd, LOWORD(wParam));
+            return (INT_PTR)TRUE;
         }
-        
-        SortTreeItem* fileItem = new SortTreeItem(QStringList() << rf.name << rf.extension << QString::number(rf.size) << rf.recoverability);
-        fileItem->setData(0, Qt::UserRole, i); // Store index
-        
-        if (rf.recoverability == "High") fileItem->setForeground(3, QBrush(Qt::darkGreen));
-        else if (rf.recoverability == "Low") fileItem->setForeground(3, QBrush(Qt::darkYellow));
-        else fileItem->setForeground(3, QBrush(Qt::red));
-        
-        if (parentItem) {
-            parentItem->addChild(fileItem);
-        } else {
-            recoveryTree->addTopLevelItem(fileItem);
-        }
+    } else if (message == WM_CLOSE) {
+        EndDialog(hWnd, IDCANCEL);
+        return (INT_PTR)TRUE;
     }
-    
-    recoveryTree->setSortingEnabled(true);
-}
-
-bool MainWindow::filterTreeItem(QTreeWidgetItem* item, const QString& filter) {
-    bool isFolder = !item->data(0, Qt::UserRole).isValid();
-    bool match = false;
-    
-    if (isFolder) {
-        // A folder is visible if ANY of its children match
-        for (int i = 0; i < item->childCount(); ++i) {
-            if (filterTreeItem(item->child(i), filter)) {
-                match = true;
-            }
-        }
-        if (match && !filter.isEmpty()) {
-            item->setExpanded(true); // Auto-expand if a child matched the filter
-        } else if (filter.isEmpty()) {
-            item->setExpanded(false); // Collapse if filter cleared
-        }
-    } else {
-        // A file is visible if its name or extension matches the filter
-        if (filter.isEmpty()) {
-            match = true;
-        } else {
-            QString name = item->text(0).toLower();
-            QString ext = item->text(1).toLower();
-            match = name.contains(filter) || ext.contains(filter);
-        }
-    }
-    
-    item->setHidden(!match);
-    return match;
-}
-
-void MainWindow::filterRecoveryFiles(const QString& text) {
-    QString filter = text.toLower();
-    
-    for (int i = 0; i < recoveryTree->topLevelItemCount(); ++i) {
-        filterTreeItem(recoveryTree->topLevelItem(i), filter);
-    }
-}
-
-void MainWindow::recoverSelectedFile() {
-    QList<QTreeWidgetItem*> selected = recoveryTree->selectedItems();
-    if (selected.isEmpty()) return;
-    
-    QTreeWidgetItem* item = selected.first();
-    QVariant data = item->data(0, Qt::UserRole);
-    if (!data.isValid()) return; // Probably clicked a folder node
-    
-    int originalIndex = data.toInt();
-    if (originalIndex < 0 || originalIndex >= m_recoverableFiles.size()) return;
-    
-    const RecoverableFile& fileToRecover = m_recoverableFiles[originalIndex];
-    
-    QString savePath = QFileDialog::getSaveFileName(this, "Save Recovered File", fileToRecover.name);
-    if (savePath.isEmpty()) return;
-    
-    QString drivePath = comboRecoveryDrives->currentText();
-    QString driveRoot = drivePath.left(3);
-    char fsNameBuf[MAX_PATH];
-    GetVolumeInformationA(driveRoot.toStdString().c_str(), NULL, 0, NULL, NULL, NULL, fsNameBuf, MAX_PATH);
-    QString fsName = QString::fromLocal8Bit(fsNameBuf);
-    
-    bool isFat = fsName.contains("FAT");
-    bool success = false;
-    
-    if (isFat) {
-        FatRecovery fat;
-        success = fat.recoverFile(drivePath, fileToRecover, savePath);
-    } else {
-        NtfsRecovery ntfs;
-        success = ntfs.recoverFile(drivePath, fileToRecover, savePath);
-    }
-    
-    if (success) {
-    QMessageBox::information(this, "Success", "File successfully recovered to:\n" + savePath);
-    } else {
-        QMessageBox::critical(this, "Error", "Failed to recover the file. The data may have been partially or completely overwritten.");
-    }
-}
-
-void MainWindow::showRecoveryContextMenu(const QPoint& pos) {
-    QTreeWidgetItem* item = recoveryTree->itemAt(pos);
-    if (!item) return;
-    
-    // Only show context menu if it's a file, not a folder
-    if (!item->data(0, Qt::UserRole).isValid()) return;
-    
-    // Ensure the clicked item is selected
-    item->setSelected(true);
-    
-    QMenu menu(this);
-    QAction* recoverAction = menu.addAction(QApplication::style()->standardIcon(QStyle::SP_DriveFDIcon), "Recover Selected File");
-    connect(recoverAction, &QAction::triggered, this, &MainWindow::recoverSelectedFile);
-    
-    menu.exec(recoveryTree->viewport()->mapToGlobal(pos));
-}
-
-void MainWindow::showProgramsContextMenu(const QPoint& pos) {
-    QTableWidgetItem* item = programsTable->itemAt(pos);
-    if (!item) return;
-    
-    int row = item->row();
-    programsTable->selectRow(row);
-    
-    QMenu menu(this);
-    QAction* uninstallAction = menu.addAction(QApplication::style()->standardIcon(QStyle::SP_DialogCancelButton), "Uninstall");
-    QAction* forceRemoveAction = menu.addAction(QApplication::style()->standardIcon(QStyle::SP_TrashIcon), "Force Remove Registry Entry");
-    
-    connect(uninstallAction, &QAction::triggered, this, &MainWindow::uninstallSelected);
-    connect(forceRemoveAction, &QAction::triggered, this, &MainWindow::forceRemoveSelected);
-    
-    menu.exec(programsTable->viewport()->mapToGlobal(pos));
+    return (INT_PTR)FALSE;
 }

@@ -1,83 +1,89 @@
 #include "BrowserCleaner.h"
-#include <QStandardPaths>
-#include <QDirIterator>
-#include <QFileInfo>
-#include <QDebug>
+#include <filesystem>
+#include <shlobj.h>
+#include <algorithm>
+#include <iostream>
 
-QString BrowserCleaner::getLocalAppData() {
-    return QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation);
+namespace fs = std::filesystem;
+
+std::wstring BrowserCleaner::getLocalAppData() {
+    wchar_t path[MAX_PATH];
+    if (SUCCEEDED(SHGetFolderPathW(NULL, CSIDL_LOCAL_APPDATA, NULL, 0, path))) {
+        return path;
+    }
+    return L"";
 }
 
-QString BrowserCleaner::getAppData() {
-    return QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+std::wstring BrowserCleaner::getAppData() {
+    wchar_t path[MAX_PATH];
+    if (SUCCEEDED(SHGetFolderPathW(NULL, CSIDL_APPDATA, NULL, 0, path))) {
+        return path;
+    }
+    return L"";
 }
 
-QStringList BrowserCleaner::getTargetFiles(BrowserType browser, BrowserDataType dataType) {
-    QStringList files;
-    QString basePath;
+std::vector<std::wstring> BrowserCleaner::getTargetFiles(BrowserType browser, BrowserDataType dataType) {
+    std::vector<std::wstring> files;
+    std::wstring basePath;
     
-    QString localApp = QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation); 
-    // AppLocalDataLocation is often AppData/Local on Windows
-    // A safer way is to use GenericDataLocation or construct manually
-    localApp = QDir::homePath() + "/AppData/Local";
-    QString roamingApp = QDir::homePath() + "/AppData/Roaming";
+    std::wstring localApp = getLocalAppData();
+    std::wstring roamingApp = getAppData();
 
     if (browser == BrowserType::Chrome) {
-        basePath = localApp + "/Google/Chrome/User Data/Default";
+        basePath = localApp + L"\\Google\\Chrome\\User Data\\Default";
     } else if (browser == BrowserType::Edge) {
-        basePath = localApp + "/Microsoft/Edge/User Data/Default";
+        basePath = localApp + L"\\Microsoft\\Edge\\User Data\\Default";
     } else if (browser == BrowserType::Firefox) {
-        basePath = roamingApp + "/Mozilla/Firefox/Profiles";
+        basePath = roamingApp + L"\\Mozilla\\Firefox\\Profiles";
     }
 
-    if (basePath.isEmpty() || !QDir(basePath).exists()) {
+    std::error_code ec;
+    if (basePath.empty() || !fs::exists(basePath, ec)) {
         return files;
     }
 
-    // Firefox is tricky because of random profile names
-    QStringList profilePaths;
+    std::vector<std::wstring> profilePaths;
     if (browser == BrowserType::Firefox) {
-        QDir dir(basePath);
-        QStringList folders = dir.entryList(QDir::Dirs | QDir::NoDotAndDotDot);
-        for (const QString& folder : folders) {
-            profilePaths.append(basePath + "/" + folder);
+        for (const auto& entry : fs::directory_iterator(basePath, ec)) {
+            if (entry.is_directory(ec)) {
+                profilePaths.push_back(entry.path().wstring());
+            }
         }
     } else {
-        profilePaths.append(basePath);
+        profilePaths.push_back(basePath);
     }
 
-    for (const QString& profilePath : profilePaths) {
+    for (const std::wstring& profilePath : profilePaths) {
         if (dataType == BrowserDataType::History) {
             if (browser == BrowserType::Firefox) {
-                files.append(profilePath + "/places.sqlite");
+                files.push_back(profilePath + L"\\places.sqlite");
             } else {
-                files.append(profilePath + "/History");
+                files.push_back(profilePath + L"\\History");
             }
         } else if (dataType == BrowserDataType::Cookies) {
             if (browser == BrowserType::Firefox) {
-                files.append(profilePath + "/cookies.sqlite");
+                files.push_back(profilePath + L"\\cookies.sqlite");
             } else {
-                files.append(profilePath + "/Network/Cookies");
+                files.push_back(profilePath + L"\\Network\\Cookies");
             }
         } else if (dataType == BrowserDataType::Downloads) {
              if (browser != BrowserType::Firefox) {
-                // Firefox stores downloads in places.sqlite
-                // Chromium has a separate Downloads file sometimes, or it's in History
-                files.append(profilePath + "/History"); 
+                files.push_back(profilePath + L"\\History"); 
              }
         } else if (dataType == BrowserDataType::Cache) {
-            QString cachePath;
+            std::wstring cachePath;
             if (browser == BrowserType::Firefox) {
-                // Firefox cache is in LocalAppData usually
-                cachePath = localApp + "/Mozilla/Firefox/Profiles/" + QFileInfo(profilePath).fileName() + "/cache2";
+                fs::path profileP(profilePath);
+                cachePath = localApp + L"\\Mozilla\\Firefox\\Profiles\\" + profileP.filename().wstring() + L"\\cache2";
             } else {
-                cachePath = profilePath + "/Cache";
+                cachePath = profilePath + L"\\Cache";
             }
             
-            if (QDir(cachePath).exists()) {
-                QDirIterator it(cachePath, QDir::Files | QDir::NoSymLinks, QDirIterator::Subdirectories);
-                while (it.hasNext()) {
-                    files.append(it.next());
+            if (fs::exists(cachePath, ec)) {
+                for (const auto& entry : fs::recursive_directory_iterator(cachePath, fs::directory_options::skip_permission_denied, ec)) {
+                    if (entry.is_regular_file(ec)) {
+                        files.push_back(entry.path().wstring());
+                    }
                 }
             }
         }
@@ -86,18 +92,19 @@ QStringList BrowserCleaner::getTargetFiles(BrowserType browser, BrowserDataType 
     return files;
 }
 
-void BrowserCleaner::shredFiles(const QStringList& files, ShredPass passes, std::function<void(int)> progressCallback) {
-    if (files.isEmpty()) {
+void BrowserCleaner::shredFiles(const std::vector<std::wstring>& files, ShredPass passes, std::function<void(int)> progressCallback) {
+    if (files.empty()) {
         if (progressCallback) progressCallback(100);
         return;
     }
     
-    int total = files.size();
+    int total = static_cast<int>(files.size());
     int current = 0;
     
-    for (const QString& file : files) {
-        if (QFileInfo::exists(file)) {
-            FileShredder::shredFile(file, passes, nullptr); // Ignore per-file progress, track overall files
+    std::error_code ec;
+    for (const std::wstring& file : files) {
+        if (fs::exists(file, ec)) {
+            FileShredder::shredFile(file, passes, nullptr);
         }
         current++;
         if (progressCallback) {
@@ -106,13 +113,16 @@ void BrowserCleaner::shredFiles(const QStringList& files, ShredPass passes, std:
     }
 }
 
-void BrowserCleaner::cleanBrowserData(BrowserType browser, const QList<BrowserDataType>& dataTypes, ShredPass passes, std::function<void(int)> progressCallback) {
-    QStringList allFilesToShred;
+void BrowserCleaner::cleanBrowserData(BrowserType browser, const std::vector<BrowserDataType>& dataTypes, ShredPass passes, std::function<void(int)> progressCallback) {
+    std::vector<std::wstring> allFilesToShred;
     
     for (BrowserDataType type : dataTypes) {
-        allFilesToShred.append(getTargetFiles(browser, type));
+        std::vector<std::wstring> targetFiles = getTargetFiles(browser, type);
+        allFilesToShred.insert(allFilesToShred.end(), targetFiles.begin(), targetFiles.end());
     }
     
-    allFilesToShred.removeDuplicates();
+    std::sort(allFilesToShred.begin(), allFilesToShred.end());
+    allFilesToShred.erase(std::unique(allFilesToShred.begin(), allFilesToShred.end()), allFilesToShred.end());
+    
     shredFiles(allFilesToShred, passes, progressCallback);
 }

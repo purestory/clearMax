@@ -1,7 +1,8 @@
-#include "MainWindow.h"
-#include <QApplication>
-#include <QMessageBox>
+#define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <commctrl.h>
+#include "TrayApp.h"
+#include "MainWindow.h"
 
 bool isRunAsAdmin() {
     BOOL fIsRunAsAdmin = FALSE;
@@ -21,17 +22,56 @@ bool isRunAsAdmin() {
     return fIsRunAsAdmin == TRUE;
 }
 
-int main(int argc, char *argv[]) {
-    QApplication a(argc, argv);
-    
-    // It's good practice to verify admin rights at runtime even if the manifest requests it
+int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpCmdLine, int nCmdShow) {
+    HANDLE hMutex = CreateMutexW(NULL, TRUE, L"Global\\ClearMax_SingleInstanceMutex");
+    if (GetLastError() == ERROR_ALREADY_EXISTS) {
+        // Bring existing instance to front
+        HWND hExisting = FindWindowW(L"#32770", L"clearMax"); // MainWindow is a Dialog (#32770)
+        if (hExisting) {
+            ShowWindow(hExisting, SW_RESTORE);
+            SetForegroundWindow(hExisting);
+        }
+        CloseHandle(hMutex);
+        return 0;
+    }
+
     if (!isRunAsAdmin()) {
-        QMessageBox::critical(nullptr, "Administrator Privileges Required", 
-            "ClearMax requires Administrator privileges to access registry keys and perform secure file deletions on system drives.\n\nPlease restart the application as Administrator.");
+        MessageBoxW(NULL, L"ClearMax requires Administrator privileges to access registry keys and perform secure file deletions on system drives.\n\nPlease restart the application as Administrator.", L"Administrator Privileges Required", MB_ICONERROR | MB_OK);
         return 1;
     }
 
-    MainWindow w;
-    w.show();
-    return a.exec();
+    // Initialize Common Controls
+    INITCOMMONCONTROLSEX icex;
+    icex.dwSize = sizeof(INITCOMMONCONTROLSEX);
+    icex.dwICC = ICC_WIN95_CLASSES | ICC_STANDARD_CLASSES | ICC_TAB_CLASSES | ICC_LISTVIEW_CLASSES | ICC_TREEVIEW_CLASSES | ICC_PROGRESS_CLASS;
+    InitCommonControlsEx(&icex);
+
+    MainWindow mainWin(hInstance);
+    if (!mainWin.Initialize()) {
+        MessageBoxW(NULL, L"Failed to create main window.", L"Error", MB_OK);
+        return 1;
+    }
+
+    TrayApp tray(hInstance, &mainWin);
+    tray.InitTrayIcon();
+
+    // Check for autostart flag
+    bool isAutoStart = false;
+    if (lpCmdLine && wcsstr(lpCmdLine, L"/autostart") != NULL) {
+        isAutoStart = true;
+    }
+
+    if (!isAutoStart) {
+        mainWin.Show(); // Show window on normal startup
+    }
+
+    MSG msg;
+    while (GetMessage(&msg, NULL, 0, 0)) {
+        if (!IsDialogMessage(mainWin.GetHWND(), &msg)) {
+            TranslateMessage(&msg);
+            DispatchMessage(&msg);
+        }
+    }
+
+    return (int)msg.wParam;
 }

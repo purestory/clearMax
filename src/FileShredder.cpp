@@ -1,23 +1,21 @@
 #include "FileShredder.h"
-#include <QFile>
-#include <QFileInfo>
-#include <QDir>
-#include <QUuid>
-#include <QDebug>
 #include <random>
 #include <fstream>
 #define NOMINMAX
 #include <windows.h>
 #include <io.h>
 #include <filesystem>
-#include <QDirIterator>
 #include <winioctl.h>
+#include <algorithm>
+#include <iostream>
+
+namespace fs = std::filesystem;
 
 // Generate random string for file name obfuscation
-QString FileShredder::generateRandomString(int length) {
-    const QString possibleCharacters("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789");
+std::wstring FileShredder::generateRandomString(int length) {
+    const std::wstring possibleCharacters = L"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
     const int randomStringLength = length;
-    QString randomString;
+    std::wstring randomString;
     
     std::random_device rd;
     std::mt19937 generator(rd());
@@ -25,7 +23,7 @@ QString FileShredder::generateRandomString(int length) {
     
     for (int i = 0; i < randomStringLength; ++i) {
         int index = distribution(generator);
-        randomString.append(possibleCharacters.at(index));
+        randomString.push_back(possibleCharacters[index]);
     }
     return randomString;
 }
@@ -39,21 +37,25 @@ void FileShredder::generateRandomData(char* buffer, size_t size) {
     }
 }
 
-bool FileShredder::overwriteFile(const QString& filePath, ShredPass passes, std::function<void(int, const QString&)> progressCallback, std::function<bool()> cancelCheck) {
-    QFile file(filePath);
-    if (!file.open(QIODevice::ReadWrite)) {
+bool FileShredder::overwriteFile(const std::wstring& filePath, ShredPass passes, std::function<void(int, const std::wstring&)> progressCallback, std::function<bool()> cancelCheck) {
+    HANDLE hFile = CreateFileW(filePath.c_str(), GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (hFile == INVALID_HANDLE_VALUE) return false;
+    
+    LARGE_INTEGER liSize;
+    if (!GetFileSizeEx(hFile, &liSize)) {
+        CloseHandle(hFile);
         return false;
     }
     
-    qint64 fileSize = file.size();
+    int64_t fileSize = liSize.QuadPart;
     if (fileSize == 0) {
-        file.close();
+        CloseHandle(hFile);
         return true;
     }
     
     const int numPasses = static_cast<int>(passes);
     if (numPasses == 0) {
-        file.close();
+        CloseHandle(hFile);
         if (progressCallback) {
             progressCallback(100, filePath);
         }
@@ -64,27 +66,26 @@ bool FileShredder::overwriteFile(const QString& filePath, ShredPass passes, std:
     std::vector<char> buffer(bufferSize);
     
     for (int p = 0; p < numPasses; ++p) {
-        file.seek(0);
-        qint64 bytesWrittenTotal = 0;
+        SetFilePointer(hFile, 0, NULL, FILE_BEGIN);
+        int64_t bytesWrittenTotal = 0;
         
         while (bytesWrittenTotal < fileSize) {
             if (cancelCheck && cancelCheck()) {
-                file.close();
+                CloseHandle(hFile);
                 return false;
             }
-            qint64 bytesToWrite = std::min(static_cast<qint64>(bufferSize), fileSize - bytesWrittenTotal);
+            int64_t bytesToWrite = std::min(static_cast<int64_t>(bufferSize), fileSize - bytesWrittenTotal);
             
-            // For Pass 1: Zeros. For Pass 3/7: Random/Patterns (simplified to random here for all except pass 1 which is zero)
             if (numPasses == 1) {
                 std::fill(buffer.begin(), buffer.begin() + bytesToWrite, 0x00);
             } else {
                 generateRandomData(buffer.data(), bytesToWrite);
             }
             
-            qint64 written = file.write(buffer.data(), bytesToWrite);
-            if (written < 0) {
-                file.close();
-                return false; // Write error
+            DWORD written = 0;
+            if (!WriteFile(hFile, buffer.data(), static_cast<DWORD>(bytesToWrite), &written, NULL) || written == 0) {
+                CloseHandle(hFile);
+                return false; 
             }
             bytesWrittenTotal += written;
             
@@ -93,39 +94,35 @@ bool FileShredder::overwriteFile(const QString& filePath, ShredPass passes, std:
                 progressCallback(overallProgress, filePath);
             }
         }
-        file.flush();
-    }
-    
-    // Force flush to disk on Windows
-    HANDLE hFile = reinterpret_cast<HANDLE>(_get_osfhandle(file.handle()));
-    if (hFile != INVALID_HANDLE_VALUE) {
         FlushFileBuffers(hFile);
     }
     
-    file.close();
+    CloseHandle(hFile);
     return true;
 }
 
-bool FileShredder::renameAndObfuscate(const QString& filePath, QString& outNewFilePath) {
-    QFileInfo fileInfo(filePath);
-    if (!fileInfo.exists()) return false;
+bool FileShredder::renameAndObfuscate(const std::wstring& filePath, std::wstring& outNewFilePath) {
+    std::error_code ec;
+    if (!fs::exists(filePath, ec)) return false;
     
-    QDir dir = fileInfo.absoluteDir();
-    QString newName = generateRandomString(12) + ".tmp";
-    outNewFilePath = dir.absoluteFilePath(newName);
+    fs::path p(filePath);
+    fs::path dir = p.parent_path();
+    std::wstring newName = generateRandomString(12) + L".tmp";
+    outNewFilePath = (dir / newName).wstring();
     
-    if (QFile::rename(filePath, outNewFilePath)) {
+    fs::rename(p, outNewFilePath, ec);
+    if (!ec) {
         return true;
     }
     return false;
 }
 
-bool FileShredder::shredFile(const QString& filePath, ShredPass passes, std::function<void(int, const QString&)> progressCallback, std::function<bool()> cancelCheck) {
-    if (!QFileInfo::exists(filePath)) return false;
+bool FileShredder::shredFile(const std::wstring& filePath, ShredPass passes, std::function<void(int, const std::wstring&)> progressCallback, std::function<bool()> cancelCheck) {
+    std::error_code ec;
+    if (!fs::exists(filePath, ec)) return false;
     
     // Ensure file is not read-only
-    std::wstring wFilePath = filePath.toStdWString();
-    SetFileAttributesW(wFilePath.c_str(), FILE_ATTRIBUTE_NORMAL);
+    SetFileAttributesW(filePath.c_str(), FILE_ATTRIBUTE_NORMAL);
     
     // Step 1: Overwrite content
     if (!overwriteFile(filePath, passes, progressCallback, cancelCheck)) {
@@ -133,58 +130,56 @@ bool FileShredder::shredFile(const QString& filePath, ShredPass passes, std::fun
     }
     
     // Step 2 & 3: Rename to random name and extension
-    QString obfuscatedPath;
+    std::wstring obfuscatedPath;
     if (!renameAndObfuscate(filePath, obfuscatedPath)) {
-        obfuscatedPath = filePath; // If rename fails, try to delete the original at least
+        obfuscatedPath = filePath; 
     }
     
-    // Step 4: Final deletion using Windows API to ensure bypassing recycle bin
-    std::wstring wPath = obfuscatedPath.toStdWString();
-    if (DeleteFileW(wPath.c_str())) {
+    // Step 4: Final deletion using Windows API
+    if (DeleteFileW(obfuscatedPath.c_str())) {
         return true;
     }
     
-    // Fallback
-    return QFile::remove(obfuscatedPath);
+    return fs::remove(obfuscatedPath, ec);
 }
 
-int FileShredder::shredPath(const QString& path, ShredPass passes, std::function<void(int, const QString&)> progressCallback, std::function<bool()> cancelCheck) {
-    QFileInfo info(path);
-    if (!info.exists()) return -1;
+int FileShredder::shredPath(const std::wstring& path, ShredPass passes, std::function<void(int, const std::wstring&)> progressCallback, std::function<bool()> cancelCheck) {
+    std::error_code ec;
+    if (!fs::exists(path, ec)) return -1;
     
-    if (info.isFile()) {
+    if (fs::is_regular_file(path, ec)) {
         return shredFile(path, passes, progressCallback, cancelCheck) ? 0 : 1;
-    } else if (info.isDir()) {
-        QDirIterator it(path, QDir::Files | QDir::NoDotAndDotDot | QDir::Hidden | QDir::System, QDirIterator::Subdirectories);
-        QStringList files;
-        qint64 totalSize = 0;
+    } else if (fs::is_directory(path, ec)) {
+        std::vector<std::wstring> files;
+        int64_t totalSize = 0;
         int gatherCount = 0;
         
-        while (it.hasNext()) {
-            QString filePath = it.next();
-            files.append(filePath);
-            totalSize += QFileInfo(filePath).size();
-            
-            if (++gatherCount % 1000 == 0 && progressCallback) {
-                progressCallback(0, "Gathering files... (" + QString::number(gatherCount) + " found)"); // Keep UI responsive during file gathering
+        for (const auto& entry : fs::recursive_directory_iterator(path, fs::directory_options::skip_permission_denied, ec)) {
+            if (entry.is_regular_file(ec)) {
+                files.push_back(entry.path().wstring());
+                totalSize += entry.file_size(ec);
+                
+                if (++gatherCount % 1000 == 0 && progressCallback) {
+                    progressCallback(0, L"Gathering files... (" + std::to_wstring(gatherCount) + L" found)");
+                }
             }
         }
         
-        qint64 processedSize = 0;
+        int64_t processedSize = 0;
         int failedCount = 0;
-        int totalFiles = files.size();
+        int totalFiles = static_cast<int>(files.size());
         int completedFiles = 0;
         
-        for (const QString& file : files) {
+        for (const std::wstring& file : files) {
             if (cancelCheck && cancelCheck()) return -1;
             
-            qint64 fileSize = QFileInfo(file).size();
-            bool ok = shredFile(file, passes, [&](int fileProgress, const QString& currentFile) {
+            int64_t fileSize = fs::file_size(file, ec);
+            bool ok = shredFile(file, passes, [&](int fileProgress, const std::wstring& currentFile) {
                 if (progressCallback) {
-                    qint64 currentProcessed = processedSize + (fileSize * fileProgress / 100);
+                    int64_t currentProcessed = processedSize + (fileSize * fileProgress / 100);
                     int overall = totalSize > 0 ? static_cast<int>((currentProcessed * 100) / totalSize) : 100;
                     
-                    QString statusStr = QString("[%1/%2] %3").arg(completedFiles + 1).arg(totalFiles).arg(currentFile);
+                    std::wstring statusStr = L"[" + std::to_wstring(completedFiles + 1) + L"/" + std::to_wstring(totalFiles) + L"] " + currentFile;
                     progressCallback(overall, statusStr);
                 }
             }, cancelCheck);
@@ -197,30 +192,30 @@ int FileShredder::shredPath(const QString& path, ShredPass passes, std::function
             
             if (progressCallback) {
                 int overall = totalSize > 0 ? static_cast<int>((processedSize * 100) / totalSize) : 100;
-                QString statusStr = QString("[%1/%2] %3").arg(completedFiles).arg(totalFiles).arg(file);
+                std::wstring statusStr = L"[" + std::to_wstring(completedFiles) + L"/" + std::to_wstring(totalFiles) + L"] " + file;
                 progressCallback(overall, statusStr);
             }
         }
         
-        // Remove empty directories
-        QDirIterator dirIt(path, QDir::Dirs | QDir::NoDotAndDotDot | QDir::Hidden | QDir::System, QDirIterator::Subdirectories);
-        QStringList dirs;
-        while (dirIt.hasNext()) {
-            dirs.append(dirIt.next());
+        // Remove empty directories (reverse iterate to delete deepest first)
+        std::vector<std::wstring> dirs;
+        for (const auto& entry : fs::recursive_directory_iterator(path, fs::directory_options::skip_permission_denied, ec)) {
+            if (entry.is_directory(ec)) {
+                dirs.push_back(entry.path().wstring());
+            }
         }
         
-        // Sort by length descending to delete deepest first
-        std::sort(dirs.begin(), dirs.end(), [](const QString& a, const QString& b) {
+        std::sort(dirs.begin(), dirs.end(), [](const std::wstring& a, const std::wstring& b) {
             return a.length() > b.length();
         });
         
-        for (const QString& dir : dirs) {
-            QDir().rmdir(dir);
+        for (const std::wstring& dir : dirs) {
+            fs::remove(dir, ec);
         }
-        QDir().rmdir(path);
+        fs::remove(path, ec);
         
         if (progressCallback) {
-            progressCallback(100, "");
+            progressCallback(100, L"");
         }
         return failedCount;
     }
@@ -228,34 +223,34 @@ int FileShredder::shredPath(const QString& path, ShredPass passes, std::function
     return -1;
 }
 
-bool FileShredder::wipeFreeSpace(const QString& drivePath, WipeMode mode, std::function<void(int)> progressCallback, std::function<bool()> cancelCheck) {
-    std::wstring wDrive = drivePath.toStdWString();
+bool FileShredder::wipeFreeSpace(const std::wstring& drivePath, WipeMode mode, std::function<void(int)> progressCallback, std::function<bool()> cancelCheck) {
+    std::wstring wDrive = drivePath;
     
     ULARGE_INTEGER freeBytesAvailable, totalNumberOfBytes, totalNumberOfFreeBytes;
     if (!GetDiskFreeSpaceExW(wDrive.c_str(), &freeBytesAvailable, &totalNumberOfBytes, &totalNumberOfFreeBytes)) {
         return false;
     }
     
-    qint64 bytesToFill = freeBytesAvailable.QuadPart;
+    int64_t bytesToFill = freeBytesAvailable.QuadPart;
     if (bytesToFill <= 0) return true;
     
-    QString tempDirStr = drivePath;
-    if (!tempDirStr.endsWith("\\") && !tempDirStr.endsWith("/")) {
-        tempDirStr += "\\";
+    std::wstring tempDirStr = drivePath;
+    if (!tempDirStr.empty() && tempDirStr.back() != L'\\' && tempDirStr.back() != L'/') {
+        tempDirStr += L"\\";
     }
 
     if (mode == WipeMode::FullWipe) {
-        QString wipeFilePath = tempDirStr + "clearmax_wipe_" + generateRandomString(8) + ".tmp";
+        std::wstring wipeFilePath = tempDirStr + L"clearmax_wipe_" + generateRandomString(8) + L".tmp";
         
-        QFile wipeFile(wipeFilePath);
-        if (!wipeFile.open(QIODevice::WriteOnly)) {
+        HANDLE hWipeFile = CreateFileW(wipeFilePath.c_str(), GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+        if (hWipeFile == INVALID_HANDLE_VALUE) {
             return false;
         }
         
         const size_t bufferSize = 10 * 1024 * 1024; // 10MB chunk
         std::vector<char> buffer(bufferSize);
         
-        qint64 bytesWrittenTotal = 0;
+        int64_t bytesWrittenTotal = 0;
         bool cancelled = false;
         while (bytesWrittenTotal < bytesToFill) {
             if (cancelCheck && cancelCheck()) {
@@ -265,10 +260,12 @@ bool FileShredder::wipeFreeSpace(const QString& drivePath, WipeMode mode, std::f
             
             FileShredder::generateRandomData(buffer.data(), bufferSize);
             
-            qint64 bytesToWrite = std::min(static_cast<qint64>(bufferSize), bytesToFill - bytesWrittenTotal);
-            qint64 written = wipeFile.write(buffer.data(), bytesToWrite);
+            int64_t bytesToWrite = std::min(static_cast<int64_t>(bufferSize), bytesToFill - bytesWrittenTotal);
+            DWORD written = 0;
+            if (!WriteFile(hWipeFile, buffer.data(), static_cast<DWORD>(bytesToWrite), &written, NULL) || written == 0) {
+                break; 
+            }
             
-            if (written <= 0) break; 
             bytesWrittenTotal += written;
             
             if (progressCallback) {
@@ -277,23 +274,19 @@ bool FileShredder::wipeFreeSpace(const QString& drivePath, WipeMode mode, std::f
             }
         }
         
-        HANDLE hFile = reinterpret_cast<HANDLE>(_get_osfhandle(wipeFile.handle()));
-        if (hFile != INVALID_HANDLE_VALUE) {
-            FlushFileBuffers(hFile);
-        }
+        FlushFileBuffers(hWipeFile);
+        CloseHandle(hWipeFile);
         
-        wipeFile.close();
-        
-        QString obfuscatedPath;
+        std::wstring obfuscatedPath;
         if (renameAndObfuscate(wipeFilePath, obfuscatedPath)) {
-            std::wstring wPath = obfuscatedPath.toStdWString();
-            if (!DeleteFileW(wPath.c_str())) {
-                QFile::remove(obfuscatedPath);
+            if (!DeleteFileW(obfuscatedPath.c_str())) {
+                std::error_code ec;
+                fs::remove(obfuscatedPath, ec);
             }
         } else {
-            std::wstring wPath = wipeFilePath.toStdWString();
-            if (!DeleteFileW(wPath.c_str())) {
-                QFile::remove(wipeFilePath);
+            if (!DeleteFileW(wipeFilePath.c_str())) {
+                std::error_code ec;
+                fs::remove(wipeFilePath, ec);
             }
         }
         if (cancelled) return false;
@@ -305,18 +298,18 @@ bool FileShredder::wipeFreeSpace(const QString& drivePath, WipeMode mode, std::f
     
     if (progressCallback) progressCallback(baseCreationProgress);
 
-    QString mftDir = tempDirStr + "clearmax_mft_" + generateRandomString(8);
-    QDir().mkpath(mftDir);
+    std::wstring mftDir = tempDirStr + L"clearmax_mft_" + generateRandomString(8);
+    std::error_code ec;
+    fs::create_directories(mftDir, ec);
     
-    // Determine number of MFT records to wipe. Max out at 300,000 to prevent extreme delays.
     int mftRecordsToWipe = 300000;
     DWORD bytesReturned;
     NTFS_VOLUME_DATA_BUFFER ntfsVolData;
-    HANDLE hVol = CreateFileW((L"\\\\.\\" + wDrive.substr(0, 2)).c_str(), 0, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, 0, NULL);
+    std::wstring volPath = L"\\\\.\\" + wDrive.substr(0, 2);
+    HANDLE hVol = CreateFileW(volPath.c_str(), 0, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, 0, NULL);
     if (hVol != INVALID_HANDLE_VALUE) {
         if (DeviceIoControl(hVol, FSCTL_GET_NTFS_VOLUME_DATA, NULL, 0, &ntfsVolData, sizeof(ntfsVolData), &bytesReturned, NULL)) {
-            qint64 totalMftRecords = ntfsVolData.MftValidDataLength.QuadPart / 1024;
-            // Wipe up to 80% of total MFT size, capped at 500,000
+            int64_t totalMftRecords = ntfsVolData.MftValidDataLength.QuadPart / 1024;
             mftRecordsToWipe = static_cast<int>(totalMftRecords * 0.8);
             if (mftRecordsToWipe > 500000) mftRecordsToWipe = 500000;
             if (mftRecordsToWipe < 50000) mftRecordsToWipe = 50000;
@@ -324,22 +317,21 @@ bool FileShredder::wipeFreeSpace(const QString& drivePath, WipeMode mode, std::f
         CloseHandle(hVol);
     }
     
-    QString currentMftDir = mftDir;
-    QStringList createdDirs;
+    std::wstring currentMftDir = mftDir;
+    std::vector<std::wstring> createdDirs;
     for (int i = 0; i < mftRecordsToWipe; ++i) {
         if (cancelCheck && cancelCheck()) break;
         
-        // Chunk into subdirectories to keep directory operations fast
         if (i % 20000 == 0) {
-            currentMftDir = mftDir + "/" + QString::number(i);
-            QDir().mkpath(currentMftDir);
-            createdDirs.append(currentMftDir);
+            currentMftDir = mftDir + L"\\" + std::to_wstring(i);
+            fs::create_directories(currentMftDir, ec);
+            createdDirs.push_back(currentMftDir);
         }
         
-        QString dummyFile = currentMftDir + "/" + generateRandomString(12) + ".tmp";
-        QFile f(dummyFile);
-        if (f.open(QIODevice::WriteOnly)) {
-            f.close();
+        std::wstring dummyFile = currentMftDir + L"\\" + generateRandomString(12) + L".tmp";
+        HANDLE hdFile = CreateFileW(dummyFile.c_str(), GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+        if (hdFile != INVALID_HANDLE_VALUE) {
+            CloseHandle(hdFile);
         }
         
         if (i % 2000 == 0 && progressCallback) {
@@ -348,29 +340,27 @@ bool FileShredder::wipeFreeSpace(const QString& drivePath, WipeMode mode, std::f
         }
     }
     
-    // Deletion Phase (Reports progress to prevent stalling at 99%)
     int baseDeletionProgress = mode == WipeMode::MftOnly ? 50 : 95;
     int deletionProgressRange = mode == WipeMode::MftOnly ? 50 : 5;
     
     int deletedCount = 0;
-    for (const QString& subDir : createdDirs) {
+    for (const std::wstring& subDir : createdDirs) {
         if (cancelCheck && cancelCheck()) break;
-        QDir dir(subDir);
-        QStringList files = dir.entryList(QDir::Files);
-        for (const QString& file : files) {
-            dir.remove(file);
-            deletedCount++;
-            
-            if (deletedCount % 2000 == 0 && progressCallback) {
-                int progress = baseDeletionProgress + (deletedCount * deletionProgressRange) / mftRecordsToWipe;
-                // Ensure we don't hit 100% until the very end
-                if (progress >= 100) progress = 99; 
-                progressCallback(progress);
+        for (const auto& entry : fs::directory_iterator(subDir, ec)) {
+            if (entry.is_regular_file(ec)) {
+                fs::remove(entry.path(), ec);
+                deletedCount++;
+                
+                if (deletedCount % 2000 == 0 && progressCallback) {
+                    int progress = baseDeletionProgress + (deletedCount * deletionProgressRange) / mftRecordsToWipe;
+                    if (progress >= 100) progress = 99; 
+                    progressCallback(progress);
+                }
             }
         }
-        QDir().rmdir(subDir);
+        fs::remove(subDir, ec);
     }
-    QDir().rmdir(mftDir);
+    fs::remove(mftDir, ec);
 
     if (progressCallback) {
         progressCallback(100);
@@ -378,20 +368,18 @@ bool FileShredder::wipeFreeSpace(const QString& drivePath, WipeMode mode, std::f
     return true;
 }
 
-bool FileShredder::isDriveSSD(const QString& path) {
+bool FileShredder::isDriveSSD(const std::wstring& path) {
     if (path.length() < 2) return false;
     
-    // Extract drive letter, e.g. "C:"
-    QString driveStr = path.left(2);
-    if (!driveStr.endsWith(":")) {
-        // Not a standard drive letter path, can't easily detect
+    std::wstring driveStr = path.substr(0, 2);
+    if (driveStr.back() != L':') {
         return false; 
     }
     
-    QString volumePath = "\\\\.\\" + driveStr;
+    std::wstring volumePath = L"\\\\.\\" + driveStr;
     HANDLE hDevice = CreateFileW(
-        volumePath.toStdWString().c_str(),
-        0, // No access rights required to query properties
+        volumePath.c_str(),
+        0, 
         FILE_SHARE_READ | FILE_SHARE_WRITE,
         NULL,
         OPEN_EXISTING,
@@ -417,7 +405,6 @@ bool FileShredder::isDriveSSD(const QString& path) {
                         &query, sizeof(query),
                         &result, sizeof(result),
                         &bytesReturned, NULL)) {
-        // If there is no seek penalty, it's typically an SSD
         if (!result.IncursSeekPenalty) {
             isSSD = true;
         }

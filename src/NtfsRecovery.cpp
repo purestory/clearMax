@@ -1,10 +1,10 @@
 #include "NtfsRecovery.h"
-#include <QFileInfo>
-#include <QFile>
-#include <QDir>
-#include <QDebug>
-#include <winioctl.h>
+#include <fstream>
+#include <filesystem>
 #include <iostream>
+#include <unordered_map>
+#include <algorithm>
+#include <winioctl.h>
 
 #pragma pack(push, 1)
 struct NTFS_BOOT_SECTOR {
@@ -113,14 +113,14 @@ NtfsRecovery::~NtfsRecovery() {
     closeDrive();
 }
 
-bool NtfsRecovery::openDrive(const QString& drivePath) {
+bool NtfsRecovery::openDrive(const std::wstring& drivePath) {
     if (m_hDrive != INVALID_HANDLE_VALUE) return true;
     
-    QString driveLetter = drivePath.left(2);
-    QString volumePath = "\\\\.\\" + driveLetter;
+    std::wstring driveLetter = drivePath.substr(0, 2);
+    std::wstring volumePath = L"\\\\.\\" + driveLetter;
     
     m_hDrive = CreateFileW(
-        volumePath.toStdWString().c_str(),
+        volumePath.c_str(),
         GENERIC_READ,
         FILE_SHARE_READ | FILE_SHARE_WRITE,
         NULL,
@@ -139,7 +139,7 @@ void NtfsRecovery::closeDrive() {
     }
 }
 
-bool NtfsRecovery::readRaw(qint64 offset, DWORD size, void* buffer) {
+bool NtfsRecovery::readRaw(int64_t offset, DWORD size, void* buffer) {
     LARGE_INTEGER li;
     li.QuadPart = offset;
     if (!SetFilePointerEx(m_hDrive, li, NULL, FILE_BEGIN)) return false;
@@ -169,7 +169,7 @@ bool NtfsRecovery::readBootSector() {
     return true;
 }
 
-bool NtfsRecovery::parseMFTRecord(uint8_t* recordBuf, qint64 recordNum, RecoverableFile& outFile, bool& inUse) {
+bool NtfsRecovery::parseMFTRecord(uint8_t* recordBuf, int64_t recordNum, RecoverableFile& outFile, bool& inUse) {
     MFT_RECORD_HEADER* header = reinterpret_cast<MFT_RECORD_HEADER*>(recordBuf);
     
     if (memcmp(header->signature, "FILE", 4) != 0) return false;
@@ -209,12 +209,12 @@ bool NtfsRecovery::parseMFTRecord(uint8_t* recordBuf, qint64 recordNum, Recovera
             FILE_NAME_ATTRIBUTE* fn = reinterpret_cast<FILE_NAME_ATTRIBUTE*>(recordBuf + offset + attr->resident.offset);
             // DOS name type is 2, skip to get Win32 name (1) or POSIX (0) or Win32+DOS (3)
             if (fn->nameType != 2 || !hasName) { 
-                QString name = QString::fromWCharArray(fn->name, fn->nameLength);
+                std::wstring name(fn->name, fn->nameLength);
                 outFile.name = name;
                 outFile.parentRecordNumber = fn->parentDirectory & 0x0000FFFFFFFFFFFF;
-                int dotIndex = name.lastIndexOf('.');
-                if (dotIndex != -1) {
-                    outFile.extension = name.mid(dotIndex + 1);
+                size_t dotIndex = name.find_last_of(L'.');
+                if (dotIndex != std::wstring::npos) {
+                    outFile.extension = name.substr(dotIndex + 1);
                 }
                 hasName = true;
             }
@@ -231,20 +231,20 @@ bool NtfsRecovery::parseMFTRecord(uint8_t* recordBuf, qint64 recordNum, Recovera
                 
                 // Parse runlist
                 uint8_t* runList = recordBuf + offset + attr->nonRes.runListOffset;
-                qint64 currentLCN = 0;
+                int64_t currentLCN = 0;
                 while (*runList != 0x00) {
                     uint8_t lenLength = (*runList) & 0x0F;
                     uint8_t offsetLength = ((*runList) & 0xF0) >> 4;
                     runList++;
                     
-                    qint64 length = 0;
+                    int64_t length = 0;
                     for (int i = 0; i < lenLength; i++) {
-                        length |= static_cast<qint64>(*runList++) << (i * 8);
+                        length |= static_cast<int64_t>(*runList++) << (i * 8);
                     }
                     
-                    qint64 offsetChange = 0;
+                    int64_t offsetChange = 0;
                     for (int i = 0; i < offsetLength; i++) {
-                        offsetChange |= static_cast<qint64>(*runList++) << (i * 8);
+                        offsetChange |= static_cast<int64_t>(*runList++) << (i * 8);
                     }
                     // Sign extend offsetChange
                     if (offsetLength > 0 && (offsetChange & (1ULL << (offsetLength * 8 - 1)))) {
@@ -264,9 +264,9 @@ bool NtfsRecovery::parseMFTRecord(uint8_t* recordBuf, qint64 recordNum, Recovera
     }
     
     if (hasName) {
-        outFile.recoverability = "High";
+        outFile.recoverability = L"High";
         if (!outFile.isResident && outFile.dataRuns.empty() && outFile.size > 0) {
-            outFile.recoverability = "Low";
+            outFile.recoverability = L"Low";
         }
         return true;
     }
@@ -274,19 +274,19 @@ bool NtfsRecovery::parseMFTRecord(uint8_t* recordBuf, qint64 recordNum, Recovera
     return false;
 }
 
-bool NtfsRecovery::scanDrive(const QString& drivePath, QList<RecoverableFile>& outFiles, std::function<void(int, const QString&)> progressCallback) {
+bool NtfsRecovery::scanDrive(const std::wstring& drivePath, std::vector<RecoverableFile>& outFiles, std::function<void(int, const std::wstring&)> progressCallback) {
     if (!openDrive(drivePath)) return false;
     if (!readBootSector()) return false;
     
     outFiles.clear();
     
-    qint64 mftByteOffset = m_mftStartLCN * m_bytesPerCluster;
+    int64_t mftByteOffset = m_mftStartLCN * m_bytesPerCluster;
     std::vector<uint8_t> recordBuf(m_mftRecordSize);
     
     int maxRecordsToScan = 150000; // Limit for performance in this simple version
     
-    QHash<qint64, std::pair<QString, qint64>> dirMap; // recordNumber -> <Name, ParentRecordNumber>
-    QList<RecoverableFile> tempDeletedFiles;
+    std::unordered_map<int64_t, std::pair<std::wstring, int64_t>> dirMap; // recordNumber -> <Name, ParentRecordNumber>
+    std::vector<RecoverableFile> tempDeletedFiles;
     
     for (int i = 0; i < maxRecordsToScan; ++i) {
         if (!readRaw(mftByteOffset + (i * m_mftRecordSize), m_mftRecordSize, recordBuf.data())) break;
@@ -297,75 +297,81 @@ bool NtfsRecovery::scanDrive(const QString& drivePath, QList<RecoverableFile>& o
             bool inUse = false;
             if (parseMFTRecord(recordBuf.data(), i, rf, inUse)) {
                 if (rf.isDir) {
-                    dirMap.insert(i, {rf.name, rf.parentRecordNumber});
+                    dirMap.insert({i, {rf.name, rf.parentRecordNumber}});
                 }
                 if (!inUse) {
-                    tempDeletedFiles.append(rf);
+                    tempDeletedFiles.push_back(rf);
                 }
             }
         }
         
         if (progressCallback && i % 5000 == 0) {
             int progress = (i * 100) / maxRecordsToScan;
-            progressCallback(progress, QString("Scanning MFT Record %1... Found %2 deleted files").arg(i).arg(tempDeletedFiles.size()));
+            progressCallback(progress, L"Scanning MFT Record...");
         }
     }
     
     // Resolve full paths
     for (RecoverableFile& rf : tempDeletedFiles) {
-        QStringList pathParts;
-        qint64 currentParent = rf.parentRecordNumber;
+        std::vector<std::wstring> pathParts;
+        int64_t currentParent = rf.parentRecordNumber;
         int maxDepth = 20; // Prevent infinite loops
         while (currentParent != 5 && currentParent != 0 && maxDepth-- > 0) { // 5 is root dir
-            if (dirMap.contains(currentParent)) {
-                auto dirInfo = dirMap.value(currentParent);
-                pathParts.prepend(dirInfo.first);
+            auto it = dirMap.find(currentParent);
+            if (it != dirMap.end()) {
+                auto dirInfo = it->second;
+                pathParts.insert(pathParts.begin(), dirInfo.first);
                 if (currentParent == dirInfo.second) break; // self-referencing check
                 currentParent = dirInfo.second;
             } else {
-                pathParts.prepend(QString("Folder_%1").arg(currentParent));
-                pathParts.prepend("Unknown Folders");
+                pathParts.insert(pathParts.begin(), L"Folder_" + std::to_wstring(currentParent));
+                pathParts.insert(pathParts.begin(), L"Unknown Folders");
                 break;
             }
         }
-        if (pathParts.isEmpty()) {
-            rf.fullPath = "Root";
+        
+        if (pathParts.empty()) {
+            rf.fullPath = L"Root";
         } else {
-            rf.fullPath = pathParts.join("/");
+            std::wstring joined = pathParts[0];
+            for (size_t i = 1; i < pathParts.size(); ++i) {
+                joined += L"/" + pathParts[i];
+            }
+            rf.fullPath = joined;
         }
-        outFiles.append(rf);
+        outFiles.push_back(rf);
     }
     
-    if (progressCallback) progressCallback(100, QString("Scan complete. Found %1 deleted files.").arg(outFiles.size()));
+    if (progressCallback) progressCallback(100, L"Scan complete.");
     
     return true;
 }
 
-bool NtfsRecovery::recoverFile(const QString& drivePath, const RecoverableFile& file, const QString& destPath) {
+bool NtfsRecovery::recoverFile(const std::wstring& drivePath, const RecoverableFile& file, const std::wstring& destPath) {
     if (file.isDir) return false;
     
     if (!openDrive(drivePath)) return false;
     if (!readBootSector()) return false;
     
-    QFile destFile(destPath);
-    if (!destFile.open(QIODevice::WriteOnly)) return false;
+    std::ofstream destFile(destPath, std::ios::binary);
+    if (!destFile.is_open()) return false;
     
     if (file.isResident) {
         destFile.write(reinterpret_cast<const char*>(file.residentData.data()), file.residentData.size());
         return true;
     } else {
-        qint64 remainingSize = file.size;
+        int64_t remainingSize = file.size;
         std::vector<char> clusterBuf(m_bytesPerCluster);
         
         for (const auto& run : file.dataRuns) {
-            qint64 lcn = run.first;
-            qint64 count = run.second;
+            int64_t lcn = run.first;
+            int64_t count = run.second;
             
-            for (qint64 i = 0; i < count && remainingSize > 0; ++i) {
-                qint64 byteOffset = (lcn + i) * m_bytesPerCluster;
+            for (int64_t i = 0; i < count && remainingSize > 0; ++i) {
+                int64_t byteOffset = (lcn + i) * m_bytesPerCluster;
                 if (!readRaw(byteOffset, m_bytesPerCluster, clusterBuf.data())) return false;
                 
-                qint64 toWrite = qMin(static_cast<qint64>(m_bytesPerCluster), remainingSize);
+                int64_t toWrite = (std::min)(static_cast<int64_t>(m_bytesPerCluster), remainingSize);
                 destFile.write(clusterBuf.data(), toWrite);
                 remainingSize -= toWrite;
             }

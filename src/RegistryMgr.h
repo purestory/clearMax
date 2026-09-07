@@ -1,25 +1,24 @@
 #pragma once
-#include <QString>
-#include <QList>
+#include <string>
+#include <vector>
 #include <windows.h>
-
 #include <functional>
 
 struct ProgramInfo {
-    QString displayName;
-    QString displayVersion;
-    QString publisher;
-    QString uninstallString;
-    QString registryKeyPath;
-    QString displayIcon; // Path to icon
-    QString installDate; // YYYYMMDD format
+    std::wstring displayName;
+    std::wstring displayVersion;
+    std::wstring publisher;
+    std::wstring uninstallString;
+    std::wstring registryKeyPath;
+    std::wstring displayIcon; // Path to icon
+    std::wstring installDate; // YYYYMMDD format
     DWORD estimatedSize; // Size in KB
     bool isGhost; // true if files don't exist but registry remains
 };
 
 class RegistryMgr {
 public:
-    static QList<ProgramInfo> getInstalledPrograms();
+    static std::vector<ProgramInfo> getInstalledPrograms();
     
     // Normal uninstall via UninstallString
     static bool uninstallProgram(const ProgramInfo& info, std::function<void()> onFinished = nullptr);
@@ -28,7 +27,7 @@ public:
     static bool forceRemoveProgram(const ProgramInfo& info);
 
 private:
-    static void scanRegistryKey(HKEY rootKey, const QString& subKey, QList<ProgramInfo>& programs);
-    static QString getRegString(HKEY key, const QString& valueName);
-    static DWORD getRegDword(HKEY key, const QString& valueName);
+    static void scanRegistryKey(HKEY rootKey, const std::wstring& subKey, std::vector<ProgramInfo>& programs);
+    static std::wstring getRegString(HKEY key, const std::wstring& valueName);
+    static DWORD getRegDword(HKEY key, const std::wstring& valueName);
 };

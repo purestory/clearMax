@@ -1,10 +1,9 @@
 #include "FatRecovery.h"
-#include <QFileInfo>
-#include <QFile>
-#include <QDir>
-#include <QDebug>
-#include <winioctl.h>
+#include <fstream>
+#include <filesystem>
 #include <iostream>
+#include <winioctl.h>
+#include <algorithm>
 
 #pragma pack(push, 1)
 struct FAT32_BOOT_SECTOR {
@@ -61,14 +60,14 @@ FatRecovery::~FatRecovery() {
     closeDrive();
 }
 
-bool FatRecovery::openDrive(const QString& drivePath) {
+bool FatRecovery::openDrive(const std::wstring& drivePath) {
     if (m_hDrive != INVALID_HANDLE_VALUE) return true;
     
-    QString driveLetter = drivePath.left(2);
-    QString volumePath = "\\\\.\\" + driveLetter;
+    std::wstring driveLetter = drivePath.substr(0, 2);
+    std::wstring volumePath = L"\\\\.\\" + driveLetter;
     
     m_hDrive = CreateFileW(
-        volumePath.toStdWString().c_str(),
+        volumePath.c_str(),
         GENERIC_READ,
         FILE_SHARE_READ | FILE_SHARE_WRITE,
         NULL,
@@ -87,7 +86,7 @@ void FatRecovery::closeDrive() {
     }
 }
 
-bool FatRecovery::readRaw(qint64 offset, DWORD size, void* buffer) {
+bool FatRecovery::readRaw(int64_t offset, DWORD size, void* buffer) {
     LARGE_INTEGER li;
     li.QuadPart = offset;
     if (!SetFilePointerEx(m_hDrive, li, NULL, FILE_BEGIN)) return false;
@@ -127,7 +126,7 @@ uint32_t FatRecovery::getFatEntry(uint32_t cluster) {
     uint32_t offsetInSector = fatOffset % m_bytesPerSector;
     
     std::vector<uint8_t> sectorBuf(m_bytesPerSector);
-    if (!readRaw(static_cast<qint64>(sector) * m_bytesPerSector, m_bytesPerSector, sectorBuf.data())) {
+    if (!readRaw(static_cast<int64_t>(sector) * m_bytesPerSector, m_bytesPerSector, sectorBuf.data())) {
         return 0x0FFFFFFF;
     }
     
@@ -138,7 +137,7 @@ uint32_t FatRecovery::getFatEntry(uint32_t cluster) {
 bool FatRecovery::readClusterChain(uint32_t startCluster, std::vector<uint8_t>& outData) {
     uint32_t cluster = startCluster;
     while (cluster >= 2 && cluster < 0x0FFFFFF8) {
-        qint64 offset = static_cast<qint64>(m_dataStartSector + (cluster - 2) * m_sectorsPerCluster) * m_bytesPerSector;
+        int64_t offset = static_cast<int64_t>(m_dataStartSector + (cluster - 2) * m_sectorsPerCluster) * m_bytesPerSector;
         std::vector<uint8_t> clusterBuf(m_bytesPerCluster);
         if (!readRaw(offset, m_bytesPerCluster, clusterBuf.data())) break;
         outData.insert(outData.end(), clusterBuf.begin(), clusterBuf.end());
@@ -147,24 +146,24 @@ bool FatRecovery::readClusterChain(uint32_t startCluster, std::vector<uint8_t>& 
     return !outData.empty();
 }
 
-QString FatRecovery::parseShortName(const uint8_t* name) {
-    QString res;
+std::wstring FatRecovery::parseShortName(const uint8_t* name) {
+    std::wstring res;
     // Name is 8 chars, ext is 3 chars. First char might be 0xE5
     for (int i = 0; i < 8; i++) {
         if (name[i] == 0x20) break;
-        if (i == 0 && name[i] == 0xE5) res += "_";
-        else res += QChar(name[i]);
+        if (i == 0 && name[i] == 0xE5) res += L"_";
+        else res += static_cast<wchar_t>(name[i]);
     }
-    QString ext;
+    std::wstring ext;
     for (int i = 8; i < 11; i++) {
         if (name[i] == 0x20) break;
-        ext += QChar(name[i]);
+        ext += static_cast<wchar_t>(name[i]);
     }
-    if (!ext.isEmpty()) res += "." + ext;
+    if (!ext.empty()) res += L"." + ext;
     return res;
 }
 
-void FatRecovery::scanDirectory(uint32_t startCluster, const QString& currentPath, QList<RecoverableFile>& outFiles, std::function<void(int, const QString&)> progressCallback) {
+void FatRecovery::scanDirectory(uint32_t startCluster, const std::wstring& currentPath, std::vector<RecoverableFile>& outFiles, std::function<void(int, const std::wstring&)> progressCallback) {
     std::vector<uint8_t> dirData;
     if (!readClusterChain(startCluster, dirData)) return;
     
@@ -180,8 +179,8 @@ void FatRecovery::scanDirectory(uint32_t startCluster, const QString& currentPat
             
             RecoverableFile rf;
             rf.name = parseShortName(entry.name);
-            int dotIndex = rf.name.lastIndexOf('.');
-            if (dotIndex != -1) rf.extension = rf.name.mid(dotIndex + 1);
+            size_t dotIndex = rf.name.find_last_of(L'.');
+            if (dotIndex != std::wstring::npos) rf.extension = rf.name.substr(dotIndex + 1);
             
             rf.fullPath = currentPath;
             rf.size = entry.fileSize;
@@ -192,55 +191,55 @@ void FatRecovery::scanDirectory(uint32_t startCluster, const QString& currentPat
             // If the start cluster is marked free, we have to assume contiguous clusters.
             uint32_t fatVal = getFatEntry(rf.fatStartCluster);
             if (fatVal == 0) {
-                rf.recoverability = "Low"; // Chain is lost, contiguous recovery only
+                rf.recoverability = L"Low"; // Chain is lost, contiguous recovery only
             } else if (fatVal >= 0x0FFFFFF8) {
-                rf.recoverability = "High"; // Small file fitting in one cluster
+                rf.recoverability = L"High"; // Small file fitting in one cluster
             } else {
-                rf.recoverability = "Overwritten"; // Cluster reused by another file
+                rf.recoverability = L"Overwritten"; // Cluster reused by another file
             }
             
-            outFiles.append(rf);
+            outFiles.push_back(rf);
         } else if (entry.name[0] != 0x05 && (entry.attr & 0x10) && !(entry.attr & 0x08)) {
             // Valid sub-directory, recurse
             // Avoid . and ..
             if (entry.name[0] != '.') {
-                QString dirName = parseShortName(entry.name);
+                std::wstring dirName = parseShortName(entry.name);
                 uint32_t subCluster = (static_cast<uint32_t>(entry.fstClusHI) << 16) | entry.fstClusLO;
                 if (subCluster != 0 && subCluster != startCluster) {
-                    scanDirectory(subCluster, currentPath + "/" + dirName, outFiles, progressCallback);
+                    scanDirectory(subCluster, currentPath + L"/" + dirName, outFiles, progressCallback);
                 }
             }
         }
     }
 }
 
-bool FatRecovery::scanDrive(const QString& drivePath, QList<RecoverableFile>& outFiles, std::function<void(int, const QString&)> progressCallback) {
+bool FatRecovery::scanDrive(const std::wstring& drivePath, std::vector<RecoverableFile>& outFiles, std::function<void(int, const std::wstring&)> progressCallback) {
     if (!openDrive(drivePath)) return false;
     
-    if (progressCallback) progressCallback(5, "Reading Boot Sector...");
+    if (progressCallback) progressCallback(5, L"Reading Boot Sector...");
     if (!readBootSector()) {
         closeDrive();
         return false;
     }
     
-    if (progressCallback) progressCallback(10, "Scanning FAT Directories...");
+    if (progressCallback) progressCallback(10, L"Scanning FAT Directories...");
     
-    scanDirectory(m_rootCluster, "", outFiles, progressCallback);
+    scanDirectory(m_rootCluster, L"", outFiles, progressCallback);
     
-    if (progressCallback) progressCallback(100, "Scan Complete");
+    if (progressCallback) progressCallback(100, L"Scan Complete");
     closeDrive();
     return true;
 }
 
-bool FatRecovery::recoverFile(const QString& drivePath, const RecoverableFile& file, const QString& destPath) {
+bool FatRecovery::recoverFile(const std::wstring& drivePath, const RecoverableFile& file, const std::wstring& destPath) {
     if (!openDrive(drivePath)) return false;
     if (!readBootSector()) {
         closeDrive();
         return false;
     }
     
-    QFile outFile(destPath);
-    if (!outFile.open(QIODevice::WriteOnly)) {
+    std::ofstream outFile(destPath, std::ios::binary);
+    if (!outFile.is_open()) {
         closeDrive();
         return false;
     }
@@ -248,14 +247,14 @@ bool FatRecovery::recoverFile(const QString& drivePath, const RecoverableFile& f
     // Recovery for FAT is tricky because the FAT chain is cleared upon deletion.
     // We assume the file was contiguous on disk.
     uint32_t cluster = file.fatStartCluster;
-    qint64 remaining = file.size;
+    int64_t remaining = file.size;
     
     std::vector<uint8_t> clusterBuf(m_bytesPerCluster);
     while (remaining > 0 && cluster >= 2 && cluster < m_totalClusters + 2) {
-        qint64 offset = static_cast<qint64>(m_dataStartSector + (cluster - 2) * m_sectorsPerCluster) * m_bytesPerSector;
+        int64_t offset = static_cast<int64_t>(m_dataStartSector + (cluster - 2) * m_sectorsPerCluster) * m_bytesPerSector;
         if (!readRaw(offset, m_bytesPerCluster, clusterBuf.data())) break;
         
-        qint64 toWrite = (std::min)(remaining, static_cast<qint64>(m_bytesPerCluster));
+        int64_t toWrite = (std::min)(remaining, static_cast<int64_t>(m_bytesPerCluster));
         outFile.write(reinterpret_cast<char*>(clusterBuf.data()), toWrite);
         remaining -= toWrite;
         
