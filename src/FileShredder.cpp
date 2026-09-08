@@ -8,6 +8,7 @@
 #include <winioctl.h>
 #include <algorithm>
 #include <iostream>
+#include <chrono>
 
 namespace fs = std::filesystem;
 
@@ -107,13 +108,27 @@ bool FileShredder::renameAndObfuscate(const std::wstring& filePath, std::wstring
     
     fs::path p(filePath);
     fs::path dir = p.parent_path();
+    std::wstring originalName = p.filename().wstring();
+    
+    // Step 1: Rename to a random string of the SAME length to overwrite the entire MFT filename attribute
+    std::wstring sameLenName = generateRandomString(static_cast<int>(originalName.length()));
+    fs::path tempPath = dir / sameLenName;
+    
+    fs::rename(p, tempPath, ec);
+    if (ec) {
+        tempPath = p; // Fallback to original if first rename fails
+    }
+    
+    // Step 2: Rename to a short random name
     std::wstring newName = generateRandomString(12) + L".tmp";
     outNewFilePath = (dir / newName).wstring();
     
-    fs::rename(p, outNewFilePath, ec);
+    fs::rename(tempPath, outNewFilePath, ec);
     if (!ec) {
         return true;
     }
+    
+    outNewFilePath = tempPath.wstring();
     return false;
 }
 
@@ -298,7 +313,8 @@ bool FileShredder::wipeFreeSpace(const std::wstring& drivePath, WipeMode mode, s
     
     if (progressCallback) progressCallback(baseCreationProgress);
 
-    std::wstring mftDir = tempDirStr + L"clearmax_mft_" + generateRandomString(8);
+    // Use \\?\ prefix to bypass MAX_PATH limits and guarantee dummy file creation
+    std::wstring mftDir = L"\\\\?\\" + tempDirStr + L"clearmax_mft_" + generateRandomString(8);
     std::error_code ec;
     fs::create_directories(mftDir, ec);
     
@@ -306,19 +322,27 @@ bool FileShredder::wipeFreeSpace(const std::wstring& drivePath, WipeMode mode, s
     DWORD bytesReturned;
     NTFS_VOLUME_DATA_BUFFER ntfsVolData;
     std::wstring volPath = L"\\\\.\\" + wDrive.substr(0, 2);
-    HANDLE hVol = CreateFileW(volPath.c_str(), 0, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, 0, NULL);
+    HANDLE hVol = CreateFileW(volPath.c_str(), FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, 0, NULL);
+    
+    int64_t initialMftSize = 0;
+    int64_t expandedMftSize = 0;
+    bool hasExpandedOnce = false;
+    
     if (hVol != INVALID_HANDLE_VALUE) {
         if (DeviceIoControl(hVol, FSCTL_GET_NTFS_VOLUME_DATA, NULL, 0, &ntfsVolData, sizeof(ntfsVolData), &bytesReturned, NULL)) {
-            int64_t totalMftRecords = ntfsVolData.MftValidDataLength.QuadPart / 1024;
-            mftRecordsToWipe = static_cast<int>(totalMftRecords * 0.8);
-            if (mftRecordsToWipe > 500000) mftRecordsToWipe = 500000;
+            initialMftSize = ntfsVolData.MftValidDataLength.QuadPart;
+            
+            int64_t totalMftRecords = initialMftSize / 1024;
+            mftRecordsToWipe = static_cast<int>(totalMftRecords); 
+            if (mftRecordsToWipe > 500000) mftRecordsToWipe = 500000; // High cap
             if (mftRecordsToWipe < 50000) mftRecordsToWipe = 50000;
         }
-        CloseHandle(hVol);
     }
     
     std::wstring currentMftDir = mftDir;
     std::vector<std::wstring> createdDirs;
+    auto mftStartTime = std::chrono::steady_clock::now();
+    
     for (int i = 0; i < mftRecordsToWipe; ++i) {
         if (cancelCheck && cancelCheck()) break;
         
@@ -328,16 +352,50 @@ bool FileShredder::wipeFreeSpace(const std::wstring& drivePath, WipeMode mode, s
             createdDirs.push_back(currentMftDir);
         }
         
-        std::wstring dummyFile = currentMftDir + L"\\" + generateRandomString(12) + L".tmp";
+        // Use a very long filename to completely overwrite old filenames in recycled MFT records
+        std::wstring dummyFile = currentMftDir + L"\\" + generateRandomString(200) + L".tmp";
         HANDLE hdFile = CreateFileW(dummyFile.c_str(), GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
         if (hdFile != INVALID_HANDLE_VALUE) {
             CloseHandle(hdFile);
         }
         
-        if (i % 2000 == 0 && progressCallback) {
-            int progress = baseCreationProgress + (i * creationProgressRange) / mftRecordsToWipe;
-            progressCallback(progress);
+        if (i > 0 && i % 2000 == 0) {
+            // MFT 용량 동적 모니터링: 1차 팽창은 허용하여 마저 채워넣고, 2차 팽창 시도 시 즉시 중단
+            if (hVol != INVALID_HANDLE_VALUE && initialMftSize > 0) {
+                if (DeviceIoControl(hVol, FSCTL_GET_NTFS_VOLUME_DATA, NULL, 0, &ntfsVolData, sizeof(ntfsVolData), &bytesReturned, NULL)) {
+                    int64_t currentMftSize = ntfsVolData.MftValidDataLength.QuadPart;
+                    
+                    if (!hasExpandedOnce) {
+                        if (currentMftSize > initialMftSize) {
+                            // 1차 팽창 감지: 멈추지 않고 팽창된 공간까지 마저 채우기 위해 기록만 함
+                            hasExpandedOnce = true;
+                            expandedMftSize = currentMftSize;
+                        }
+                    } else {
+                        if (currentMftSize > expandedMftSize) {
+                            // 2차 팽창 감지: 1차 팽창된 공간과 예전 빈 공간이 100% 다 채워졌다는 뜻이므로 즉시 중단
+                            mftRecordsToWipe = i;
+                            break;
+                        }
+                    }
+                }
+            }
+            
+            if (progressCallback) {
+                int progress = baseCreationProgress + (i * creationProgressRange) / mftRecordsToWipe;
+                progressCallback(progress);
+            }
+            
+            // Time limit check: max 20 seconds of aggressive MFT wiping per drive to avoid UI hangs
+            auto now = std::chrono::steady_clock::now();
+            if (std::chrono::duration_cast<std::chrono::seconds>(now - mftStartTime).count() >= 20) {
+                break;
+            }
         }
+    }
+    
+    if (hVol != INVALID_HANDLE_VALUE) {
+        CloseHandle(hVol);
     }
     
     int baseDeletionProgress = mode == WipeMode::MftOnly ? 50 : 95;

@@ -6,6 +6,8 @@
 #include <thread>
 #include <commctrl.h>
 #include <iostream>
+#include <chrono>
+#include <vector>
 
 #define WM_TRAYICON (WM_USER + 1)
 #define ID_TRAY_APP_ICON 1001
@@ -171,31 +173,65 @@ INT_PTR CALLBACK TrayApp::QuickDeleteDlgProc(HWND hWnd, UINT message, WPARAM wPa
 
             WipeMode wipeMode = doMftOnly ? WipeMode::MftOnly : WipeMode::FullWipe;
             
+            auto startTime = std::chrono::steady_clock::now();
+            std::vector<std::wstring> drivesToWipe;
+            
             if (doAllDrives) {
                 DWORD drives = GetLogicalDrives();
                 for (int i = 0; i < 26; ++i) {
                     if (drives & (1 << i)) {
-                        std::wstring drive = { (wchar_t)('A' + i), L':', L'\\', L'\0' };
-                        auto drvProgressCb = [ctx, drive](int p) {
-                            SendDlgItemMessage(ctx->hDlg, IDC_PROG_QUICK, PBM_SETPOS, p, 0);
-                            wchar_t buf[128];
-                            swprintf_s(buf, L"[%s] 빈 공간 삭제 중... %d%%", drive.c_str(), p);
-                            SetDlgItemTextW(ctx->hDlg, IDC_LBL_QUICK_STATUS, buf);
-                        };
-                        FileShredder::wipeFreeSpace(drive, wipeMode, drvProgressCb, nullptr);
+                        std::wstring drv = std::wstring(1, (wchar_t)('A' + i)) + L":\\";
+                        drivesToWipe.push_back(drv);
                     }
                 }
             } else {
-                auto drvProgressCb = [ctx](int p) {
-                    SendDlgItemMessage(ctx->hDlg, IDC_PROG_QUICK, PBM_SETPOS, p, 0);
-                    wchar_t buf[128];
-                    swprintf_s(buf, L"[C:\\] 빈 공간 삭제 중... %d%%", p);
-                    SetDlgItemTextW(ctx->hDlg, IDC_LBL_QUICK_STATUS, buf);
-                };
-                FileShredder::wipeFreeSpace(L"C:\\", wipeMode, drvProgressCb, nullptr);
+                drivesToWipe.push_back(L"C:\\");
             }
             
-            MessageBoxW(ctx->hDlg, L"일괄 삭제(Quick Delete) 작업이 완료되었습니다!", L"clearMax", MB_OK | MB_ICONINFORMATION);
+            int totalDrives = static_cast<int>(drivesToWipe.size());
+            if (totalDrives > 0) {
+                int currentDriveIndex = 0;
+                for (const auto& drv : drivesToWipe) {
+                    auto drvProgressCb = [ctx, drv, currentDriveIndex, totalDrives, startTime](int p) {
+                        int overallProgress = (currentDriveIndex * 100 + p) / totalDrives;
+                        
+                        auto now = std::chrono::steady_clock::now();
+                        auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - startTime).count();
+                        
+                        std::wstring etaStr = L"계산 중...";
+                        if (overallProgress > 0) {
+                            int totalExpected = static_cast<int>((elapsed * 100) / overallProgress);
+                            int remaining = totalExpected - static_cast<int>(elapsed);
+                            if (remaining < 0) remaining = 0;
+                            
+                            int mins = remaining / 60;
+                            int secs = remaining % 60;
+                            etaStr = L"약 " + std::to_wstring(mins) + L"분 " + std::to_wstring(secs) + L"초";
+                        }
+                        
+                        wchar_t buf[256];
+                        swprintf_s(buf, L"[%s] 빈 공간 삭제 중...\n전체 진행률: %d%% (남은 시간: %s)", drv.c_str(), overallProgress, etaStr.c_str());
+                        
+                        SendDlgItemMessage(ctx->hDlg, IDC_PROG_QUICK, PBM_SETPOS, overallProgress, 0);
+                        SetDlgItemTextW(ctx->hDlg, IDC_LBL_QUICK_STATUS, buf);
+                    };
+                    FileShredder::wipeFreeSpace(drv, wipeMode, drvProgressCb, nullptr);
+                    currentDriveIndex++;
+                }
+            }
+            
+            typedef int(WINAPI* MSGBOXTIMEOUTW)(HWND, LPCWSTR, LPCWSTR, UINT, WORD, DWORD);
+            HMODULE hUser32 = GetModuleHandleW(L"user32.dll");
+            if (hUser32) {
+                MSGBOXTIMEOUTW msgBoxTimeout = (MSGBOXTIMEOUTW)GetProcAddress(hUser32, "MessageBoxTimeoutW");
+                if (msgBoxTimeout) {
+                    msgBoxTimeout(ctx->hDlg, L"일괄 삭제(Quick Delete) 작업이 완료되었습니다!\n(5초 후 자동 종료됩니다.)", L"clearMax", MB_OK | MB_ICONINFORMATION, 0, 5000);
+                } else {
+                    MessageBoxW(ctx->hDlg, L"일괄 삭제(Quick Delete) 작업이 완료되었습니다!", L"clearMax", MB_OK | MB_ICONINFORMATION);
+                }
+            } else {
+                MessageBoxW(ctx->hDlg, L"일괄 삭제(Quick Delete) 작업이 완료되었습니다!", L"clearMax", MB_OK | MB_ICONINFORMATION);
+            }
             PostMessage(ctx->hDlg, WM_CLOSE, 0, 0);
         }).detach();
         

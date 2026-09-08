@@ -339,7 +339,11 @@ bool NtfsRecovery::scanDrive(const std::wstring& drivePath, std::vector<Recovera
             }
             rf.fullPath = joined;
         }
-        outFiles.push_back(rf);
+        
+        // Hide internal clearMax dummy files from the recovery results
+        if (rf.name.find(L"clearmax_") == std::wstring::npos && rf.fullPath.find(L"clearmax_") == std::wstring::npos) {
+            outFiles.push_back(rf);
+        }
     }
     
     if (progressCallback) progressCallback(100, L"Scan complete.");

@@ -9,7 +9,7 @@
 #include <thread>
 #include <shlobj.h>
 #include <algorithm>
-
+#include <chrono>
 MainWindow::MainWindow(HINSTANCE hInstance) 
     : m_hInstance(hInstance), m_hWnd(NULL), m_hTabControl(NULL),
       m_hTabPrograms(NULL), m_hTabShredder(NULL), m_hTabBrowser(NULL), m_hTabRecovery(NULL) {
@@ -26,7 +26,9 @@ bool MainWindow::Initialize() {
 
 void MainWindow::Show() {
     if (m_hWnd) {
-        ShowWindow(m_hWnd, SW_SHOW);
+        ShowWindow(m_hWnd, SW_RESTORE);
+        SetForegroundWindow(m_hWnd);
+        BringWindowToTop(m_hWnd);
         UpdateWindow(m_hWnd);
     }
 }
@@ -189,7 +191,9 @@ INT_PTR MainWindow::HandleProgramsMessage(HWND hWnd, UINT message, WPARAM wParam
                 if (realIndex >= 0 && realIndex < (int)m_programs.size()) {
                     const ProgramInfo& info = m_programs[realIndex];
                     if (wmId == IDC_BTN_UNINSTALL) {
-                        RegistryMgr::uninstallProgram(info, nullptr);
+                        RegistryMgr::uninstallProgram(info, [hWnd]() {
+                            PostMessageW(hWnd, WM_COMMAND, MAKEWPARAM(IDC_BTN_PROG_REFRESH, 0), 0);
+                        });
                     } else if (wmId == IDC_BTN_FORCE_REMOVE) {
                         if (MessageBoxW(hWnd, L"정말로 이 항목을 레지스트리에서 강제로 삭제하시겠습니까?", L"경고", MB_YESNO | MB_ICONWARNING) == IDYES) {
                             if (RegistryMgr::forceRemoveProgram(info)) {
@@ -262,6 +266,17 @@ void MainWindow::PopulateProgramsList(HWND hList) {
 }
 
 void MainWindow::FilterProgramsList(HWND hList, const std::wstring& filter) {
+    SendMessageW(hList, WM_SETREDRAW, FALSE, 0);
+
+    int topIndex = ListView_GetTopIndex(hList);
+    int selItem = ListView_GetNextItem(hList, -1, LVNI_SELECTED);
+    std::wstring selName;
+    if (selItem != -1) {
+        wchar_t buf[256] = {0};
+        ListView_GetItemText(hList, selItem, 0, buf, 256);
+        selName = buf;
+    }
+
     ListView_DeleteAllItems(hList);
     
     std::wstring lowerFilter = filter;
@@ -315,6 +330,36 @@ void MainWindow::FilterProgramsList(HWND hList, const std::wstring& filter) {
         
         row++;
     }
+
+    if (m_sortColumn != -1) {
+        ListView_SortItems(hList, MainWindow::ListViewCompareProc, (LPARAM)this);
+    }
+
+    if (!selName.empty()) {
+        int count = ListView_GetItemCount(hList);
+        for (int i = 0; i < count; ++i) {
+            wchar_t buf[256] = {0};
+            ListView_GetItemText(hList, i, 0, buf, 256);
+            if (selName == buf) {
+                ListView_SetItemState(hList, i, LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
+                break;
+            }
+        }
+    }
+
+    if (topIndex > 0) {
+        int perPage = ListView_GetCountPerPage(hList);
+        int targetBottom = topIndex + perPage - 1;
+        int count = ListView_GetItemCount(hList);
+        if (targetBottom >= count) targetBottom = count - 1;
+        if (targetBottom >= 0) {
+            ListView_EnsureVisible(hList, targetBottom, FALSE);
+            ListView_EnsureVisible(hList, topIndex, FALSE);
+        }
+    }
+
+    SendMessageW(hList, WM_SETREDRAW, TRUE, 0);
+    InvalidateRect(hList, NULL, TRUE);
 }
 
 void MainWindow::ShowProgramsContextMenu(HWND hWnd, POINT pt) {
@@ -418,22 +463,56 @@ INT_PTR MainWindow::HandleShredderMessage(HWND hWnd, UINT message, WPARAM wParam
             
             std::wstring driveW(driveStr);
             std::thread([hWnd, driveW, mode]() {
+                auto startTime = std::chrono::steady_clock::now();
+                std::vector<std::wstring> drivesToWipe;
+                
                 if (driveW.find(L"All Drives") != std::wstring::npos) {
                     DWORD drives = GetLogicalDrives();
                     for (int i = 0; i < 26; ++i) {
                         if (drives & (1 << i)) {
-                            std::wstring drv = { (wchar_t)('A' + i), L':', L'\\', L'\0' };
-                            FileShredder::wipeFreeSpace(drv, mode, [hWnd](int p) {
-                                SendDlgItemMessage(hWnd, IDC_PROG_SHRED, PBM_SETPOS, p, 0);
-                            }, nullptr);
+                            std::wstring drv = std::wstring(1, (wchar_t)('A' + i)) + L":\\";
+                            drivesToWipe.push_back(drv);
                         }
                     }
                 } else {
-                    FileShredder::wipeFreeSpace(driveW, mode, [hWnd](int p) {
-                        SendDlgItemMessage(hWnd, IDC_PROG_SHRED, PBM_SETPOS, p, 0);
-                    }, nullptr);
+                    drivesToWipe.push_back(driveW);
                 }
+                
+                int totalDrives = static_cast<int>(drivesToWipe.size());
+                if (totalDrives == 0) return;
+                
+                int currentDriveIndex = 0;
+                
+                for (const auto& drv : drivesToWipe) {
+                    auto progressCb = [hWnd, drv, currentDriveIndex, totalDrives, startTime](int p) {
+                        int overallProgress = (currentDriveIndex * 100 + p) / totalDrives;
+                        
+                        auto now = std::chrono::steady_clock::now();
+                        auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - startTime).count();
+                        
+                        std::wstring etaStr = L"계산 중...";
+                        if (overallProgress > 0) {
+                            int totalExpected = static_cast<int>((elapsed * 100) / overallProgress);
+                            int remaining = totalExpected - static_cast<int>(elapsed);
+                            if (remaining < 0) remaining = 0;
+                            
+                            int mins = remaining / 60;
+                            int secs = remaining % 60;
+                            etaStr = L"약 " + std::to_wstring(mins) + L"분 " + std::to_wstring(secs) + L"초";
+                        }
+                        
+                        std::wstring statusStr = L"[" + drv + L"] 빈 공간 삭제 중...\n전체 진행률: " + std::to_wstring(overallProgress) + L"% (남은 시간: " + etaStr + L")";
+                        
+                        SendDlgItemMessage(hWnd, IDC_PROG_SHRED, PBM_SETPOS, overallProgress, 0);
+                        SetDlgItemTextW(hWnd, IDC_LBL_SHRED_STATUS, statusStr.c_str());
+                    };
+                    
+                    FileShredder::wipeFreeSpace(drv, mode, progressCb, nullptr);
+                    currentDriveIndex++;
+                }
+                
                 MessageBoxW(hWnd, L"빈 공간 삭제 완료.", L"알림", MB_OK);
+                SetDlgItemTextW(hWnd, IDC_LBL_SHRED_STATUS, L"대기 중");
                 SendDlgItemMessage(hWnd, IDC_PROG_SHRED, PBM_SETPOS, 0, 0);
             }).detach();
         }
@@ -583,29 +662,60 @@ INT_PTR MainWindow::HandleRecoveryMessage(HWND hWnd, UINT message, WPARAM wParam
             std::thread([this, hWnd, drive]() {
                 m_recoveredFiles.clear();
                 
-                auto progressCallback = [hWnd](int p, const std::wstring& msg) {
-                    SendDlgItemMessage(hWnd, IDC_PROG_REC, PBM_SETPOS, p, 0);
-                    SetDlgItemTextW(hWnd, IDC_LBL_REC_STATUS, msg.c_str());
-                };
+                auto startTime = std::chrono::steady_clock::now();
+                std::vector<std::wstring> drivesToScan;
                 
                 if (drive.find(L"All Drives") != std::wstring::npos) {
                     DWORD drives = GetLogicalDrives();
                     for (int i = 0; i < 26; ++i) {
                         if (drives & (1 << i)) {
-                            std::wstring drv = { (wchar_t)('A' + i), L':', L'\\', L'\0' };
-                            NtfsRecovery ntfs;
-                            if (!ntfs.scanDrive(drv, m_recoveredFiles, progressCallback)) {
-                                FatRecovery fat;
-                                fat.scanDrive(drv, m_recoveredFiles, progressCallback);
-                            }
+                            std::wstring drv = std::wstring(1, (wchar_t)('A' + i)) + L":\\";
+                            drivesToScan.push_back(drv);
                         }
                     }
                 } else {
+                    drivesToScan.push_back(drive);
+                }
+                
+                int totalDrives = static_cast<int>(drivesToScan.size());
+                if (totalDrives == 0) return;
+                
+                int currentDriveIndex = 0;
+                
+                for (const auto& drv : drivesToScan) {
+                    auto progressCallback = [hWnd, drv, currentDriveIndex, totalDrives, startTime](int p, const std::wstring& msg) {
+                        int overallProgress = (currentDriveIndex * 100 + p) / totalDrives;
+                        
+                        auto now = std::chrono::steady_clock::now();
+                        auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - startTime).count();
+                        
+                        std::wstring etaStr = L"계산 중...";
+                        if (overallProgress > 0) {
+                            int totalExpected = static_cast<int>((elapsed * 100) / overallProgress);
+                            int remaining = totalExpected - static_cast<int>(elapsed);
+                            if (remaining < 0) remaining = 0;
+                            
+                            int mins = remaining / 60;
+                            int secs = remaining % 60;
+                            etaStr = L"약 " + std::to_wstring(mins) + L"분 " + std::to_wstring(secs) + L"초";
+                        }
+                        
+                        std::wstring cleanMsg = msg;
+                        if (cleanMsg.empty()) cleanMsg = L"스캔 진행 중...";
+                        
+                        std::wstring statusStr = L"[" + drv + L"] " + cleanMsg + L"\n전체 진행률: " + std::to_wstring(overallProgress) + L"% (남은 시간: " + etaStr + L")";
+                        
+                        SendDlgItemMessage(hWnd, IDC_PROG_REC, PBM_SETPOS, overallProgress, 0);
+                        SetDlgItemTextW(hWnd, IDC_LBL_REC_STATUS, statusStr.c_str());
+                    };
+                    
                     NtfsRecovery ntfs;
-                    if (!ntfs.scanDrive(drive, m_recoveredFiles, progressCallback)) {
+                    if (!ntfs.scanDrive(drv, m_recoveredFiles, progressCallback)) {
                         FatRecovery fat;
-                        fat.scanDrive(drive, m_recoveredFiles, progressCallback);
+                        fat.scanDrive(drv, m_recoveredFiles, progressCallback);
                     }
+                    
+                    currentDriveIndex++;
                 }
                 
                 // Sort by recoverability
@@ -707,6 +817,7 @@ void MainWindow::PopulateRecoveryTree(HWND hTree) {
 }
 
 void MainWindow::FilterRecoveryTree(HWND hTree, const std::wstring& filter) {
+    SendMessageW(hTree, WM_SETREDRAW, FALSE, 0);
     TreeView_DeleteAllItems(hTree);
     
     std::wstring lowerFilter = filter;
@@ -748,6 +859,9 @@ void MainWindow::FilterRecoveryTree(HWND hTree, const std::wstring& filter) {
         std::wstring displayStr = rf.name + L" (" + rf.recoverability + L", " + std::to_wstring(rf.size) + L" bytes)";
         InsertTreeItem(hTree, hParent, displayStr, static_cast<LPARAM>(i));
     }
+    
+    SendMessageW(hTree, WM_SETREDRAW, TRUE, 0);
+    InvalidateRect(hTree, NULL, TRUE);
 }
 
 void MainWindow::ShowRecoveryContextMenu(HWND hWnd, POINT pt) {
