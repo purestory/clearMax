@@ -11,6 +11,7 @@ struct ProgramInfo {
     std::wstring uninstallString;
     std::wstring registryKeyPath;
     std::wstring displayIcon; // Path to icon
+    int iconIndex = -1; // Index in the image list
     std::wstring installDate; // YYYYMMDD format
     DWORD estimatedSize; // Size in KB
     bool isGhost; // true if files don't exist but registry remains

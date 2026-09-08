@@ -255,7 +255,7 @@ bool FileShredder::wipeFreeSpace(const std::wstring& drivePath, WipeMode mode, s
     }
 
     if (mode == WipeMode::FullWipe) {
-        std::wstring wipeFilePath = tempDirStr + L"clearmax_wipe_" + generateRandomString(8) + L".tmp";
+        std::wstring wipeFilePath = tempDirStr + L"sys_tmp_wipe_" + generateRandomString(8) + L".tmp";
         
         HANDLE hWipeFile = CreateFileW(wipeFilePath.c_str(), GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
         if (hWipeFile == INVALID_HANDLE_VALUE) {
@@ -314,7 +314,7 @@ bool FileShredder::wipeFreeSpace(const std::wstring& drivePath, WipeMode mode, s
     if (progressCallback) progressCallback(baseCreationProgress);
 
     // Use \\?\ prefix to bypass MAX_PATH limits and guarantee dummy file creation
-    std::wstring mftDir = L"\\\\?\\" + tempDirStr + L"clearmax_mft_" + generateRandomString(8);
+    std::wstring mftDir = L"\\\\?\\" + tempDirStr + L"sys_tmp_mft_" + generateRandomString(8);
     std::error_code ec;
     fs::create_directories(mftDir, ec);
     

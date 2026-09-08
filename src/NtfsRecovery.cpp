@@ -274,7 +274,7 @@ bool NtfsRecovery::parseMFTRecord(uint8_t* recordBuf, int64_t recordNum, Recover
     return false;
 }
 
-bool NtfsRecovery::scanDrive(const std::wstring& drivePath, std::vector<RecoverableFile>& outFiles, std::function<void(int, const std::wstring&)> progressCallback) {
+bool NtfsRecovery::scanDrive(const std::wstring& drivePath, std::vector<RecoverableFile>& outFiles, std::function<void(int, const std::wstring&)> progressCallback, std::function<bool()> cancelCheck) {
     if (!openDrive(drivePath)) return false;
     if (!readBootSector()) return false;
     
@@ -289,6 +289,7 @@ bool NtfsRecovery::scanDrive(const std::wstring& drivePath, std::vector<Recovera
     std::vector<RecoverableFile> tempDeletedFiles;
     
     for (int i = 0; i < maxRecordsToScan; ++i) {
+        if (cancelCheck && cancelCheck()) break;
         if (!readRaw(mftByteOffset + (i * m_mftRecordSize), m_mftRecordSize, recordBuf.data())) break;
         
         // Quick check for FILE signature
@@ -340,10 +341,7 @@ bool NtfsRecovery::scanDrive(const std::wstring& drivePath, std::vector<Recovera
             rf.fullPath = joined;
         }
         
-        // Hide internal clearMax dummy files from the recovery results
-        if (rf.name.find(L"clearmax_") == std::wstring::npos && rf.fullPath.find(L"clearmax_") == std::wstring::npos) {
-            outFiles.push_back(rf);
-        }
+        outFiles.push_back(rf);
     }
     
     if (progressCallback) progressCallback(100, L"Scan complete.");

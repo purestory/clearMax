@@ -14,7 +14,7 @@ public:
 
     // Scan a drive (e.g. L"C:\\") and return a list of deleted files.
     // Progress callback provides 0-100 progress and status string.
-    bool scanDrive(const std::wstring& drivePath, std::vector<RecoverableFile>& outFiles, std::function<void(int, const std::wstring&)> progressCallback = nullptr);
+    bool scanDrive(const std::wstring& drivePath, std::vector<RecoverableFile>& outFiles, std::function<void(int, const std::wstring&)> progressCallback = nullptr, std::function<bool()> cancelCheck = nullptr);
     
     // Recover a file to a destination path
     bool recoverFile(const std::wstring& drivePath, const RecoverableFile& file, const std::wstring& destPath);

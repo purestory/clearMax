@@ -8,6 +8,7 @@
 #include "resource.h"
 #include "RecoveryTypes.h"
 #include "RegistryMgr.h"
+#include <atomic>
 
 class MainWindow {
 public:
@@ -34,6 +35,7 @@ private:
     // Tab Data
     std::vector<RecoverableFile> m_recoveredFiles;
     std::vector<ProgramInfo> m_programs;
+    HIMAGELIST m_hProgImageList;
 
     // Window Procedures
     static INT_PTR CALLBACK MainDlgProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam);
@@ -67,4 +69,10 @@ private:
     void PopulateRecoveryTree(HWND hTree);
     void FilterRecoveryTree(HWND hTree, const std::wstring& filter);
     void ShowRecoveryContextMenu(HWND hWnd, POINT pt);
+
+    // Task control
+    std::atomic<bool> m_cancelShred{false};
+    std::atomic<bool> m_pauseShred{false};
+    std::atomic<bool> m_cancelRecovery{false};
+    std::atomic<bool> m_pauseRecovery{false};
 };

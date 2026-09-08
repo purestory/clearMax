@@ -10,12 +10,16 @@
 #include <shlobj.h>
 #include <algorithm>
 #include <chrono>
+#include <shellapi.h>
+
 MainWindow::MainWindow(HINSTANCE hInstance) 
     : m_hInstance(hInstance), m_hWnd(NULL), m_hTabControl(NULL),
       m_hTabPrograms(NULL), m_hTabShredder(NULL), m_hTabBrowser(NULL), m_hTabRecovery(NULL) {
+    m_hProgImageList = ImageList_Create(16, 16, ILC_COLOR32 | ILC_MASK, 0, 100);
 }
 
 MainWindow::~MainWindow() {
+    if (m_hProgImageList) ImageList_Destroy(m_hProgImageList);
 }
 
 bool MainWindow::Initialize() {
@@ -51,6 +55,21 @@ INT_PTR CALLBACK MainWindow::MainDlgProc(HWND hWnd, UINT message, WPARAM wParam,
 
 INT_PTR MainWindow::HandleMainMessage(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) {
     switch (message) {
+        case WM_GETMINMAXINFO: {
+            LPMINMAXINFO lpMMI = (LPMINMAXINFO)lParam;
+            lpMMI->ptMinTrackSize.x = 420;
+            lpMMI->ptMinTrackSize.y = 350;
+            return 0;
+        }
+        case WM_SIZE: {
+            if (wParam != SIZE_MINIMIZED && m_hTabControl) {
+                RECT rcClient;
+                GetClientRect(hWnd, &rcClient);
+                SetWindowPos(m_hTabControl, NULL, 5, 5, rcClient.right - 10, rcClient.bottom - 10, SWP_NOZORDER);
+                ResizeTabs();
+            }
+            return (INT_PTR)TRUE;
+        }
         case WM_INITDIALOG:
             // Set the window icon (for Taskbar and Alt+Tab)
             SendMessageW(hWnd, WM_SETICON, ICON_BIG, (LPARAM)LoadIconW(GetModuleHandle(NULL), MAKEINTRESOURCEW(IDI_APP_ICON)));
@@ -162,6 +181,7 @@ INT_PTR CALLBACK MainWindow::ProgramsDlgProc(HWND hWnd, UINT message, WPARAM wPa
             ListView_InsertColumn(hList, i, &lvc);
         }
         
+        ListView_SetImageList(hList, pThis->m_hProgImageList, LVSIL_SMALL);
         pThis->PopulateProgramsList(hList);
         
         return (INT_PTR)TRUE;
@@ -174,7 +194,48 @@ INT_PTR CALLBACK MainWindow::ProgramsDlgProc(HWND hWnd, UINT message, WPARAM wPa
 }
 
 INT_PTR MainWindow::HandleProgramsMessage(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) {
-    if (message == WM_COMMAND) {
+    if (message == WM_SIZE) {
+        if (wParam != SIZE_MINIMIZED) {
+            RECT rcClient; GetClientRect(hWnd, &rcClient);
+            int w = rcClient.right, h = rcClient.bottom;
+            
+            RECT rDLU = { 10, 30, 40, 120 }; MapDialogRect(hWnd, &rDLU);
+            int m10 = rDLU.left, m30 = rDLU.top, m40 = rDLU.right, m120 = rDLU.bottom;
+
+            HWND hSearch = GetDlgItem(hWnd, IDC_EDIT_PROG_SEARCH);
+            if (hSearch) {
+                RECT rcS; GetWindowRect(hSearch, &rcS); MapWindowPoints(HWND_DESKTOP, hWnd, (LPPOINT)&rcS, 2);
+                SetWindowPos(hSearch, NULL, 0, 0, w - rcS.left - m10, rcS.bottom - rcS.top, SWP_NOMOVE | SWP_NOZORDER);
+            }
+            HWND hList = GetDlgItem(hWnd, IDC_LIST_PROGRAMS);
+            if (hList) {
+                RECT rcL; GetWindowRect(hList, &rcL); MapWindowPoints(HWND_DESKTOP, hWnd, (LPPOINT)&rcL, 2);
+                SetWindowPos(hList, NULL, 0, 0, w - rcL.left - m10, h - rcL.top - m40, SWP_NOMOVE | SWP_NOZORDER);
+            }
+            
+            int btnY = h - m30;
+            HWND hBtnRefresh = GetDlgItem(hWnd, IDC_BTN_PROG_REFRESH);
+            if (hBtnRefresh) {
+                RECT rcB; GetWindowRect(hBtnRefresh, &rcB); MapWindowPoints(HWND_DESKTOP, hWnd, (LPPOINT)&rcB, 2);
+                SetWindowPos(hBtnRefresh, NULL, rcB.left, btnY, 0, 0, SWP_NOSIZE | SWP_NOZORDER);
+            }
+            
+            HWND hBtnForce = GetDlgItem(hWnd, IDC_BTN_FORCE_REMOVE);
+            if (hBtnForce) {
+                RECT rcF; GetWindowRect(hBtnForce, &rcF); int fW = rcF.right - rcF.left;
+                SetWindowPos(hBtnForce, NULL, w - m10 - fW, btnY, 0, 0, SWP_NOSIZE | SWP_NOZORDER);
+            }
+            
+            HWND hBtnUn = GetDlgItem(hWnd, IDC_BTN_UNINSTALL);
+            if (hBtnUn) {
+                RECT rcU; GetWindowRect(hBtnUn, &rcU); int uW = rcU.right - rcU.left;
+                HWND hF = GetDlgItem(hWnd, IDC_BTN_FORCE_REMOVE);
+                RECT rcF; GetWindowRect(hF, &rcF); int fW = rcF.right - rcF.left;
+                SetWindowPos(hBtnUn, NULL, w - m10 - fW - m10 - uW, btnY, 0, 0, SWP_NOSIZE | SWP_NOZORDER);
+            }
+        }
+        return (INT_PTR)TRUE;
+    } else if (message == WM_COMMAND) {
         int wmId = LOWORD(wParam);
         if (wmId == IDC_BTN_UNINSTALL || wmId == IDC_BTN_FORCE_REMOVE) {
             HWND hList = GetDlgItem(hWnd, IDC_LIST_PROGRAMS);
@@ -262,6 +323,54 @@ int CALLBACK MainWindow::ListViewCompareProc(LPARAM lParam1, LPARAM lParam2, LPA
 void MainWindow::PopulateProgramsList(HWND hList) {
     ListView_DeleteAllItems(hList);
     m_programs = RegistryMgr::getInstalledPrograms();
+    
+    ImageList_RemoveAll(m_hProgImageList);
+    HICON hDefaultIcon = LoadIconW(NULL, IDI_APPLICATION);
+    int defaultIconIdx = ImageList_AddIcon(m_hProgImageList, hDefaultIcon);
+
+    for (auto& prog : m_programs) {
+        if (!prog.displayIcon.empty()) {
+            std::wstring iconPath = prog.displayIcon;
+            int iconIndex = 0;
+            
+            // Handle "path,index" format
+            size_t commaPos = iconPath.find_last_of(L',');
+            if (commaPos != std::wstring::npos) {
+                std::wstring idxStr = iconPath.substr(commaPos + 1);
+                bool isNum = true;
+                for(wchar_t c : idxStr) {
+                    if(!iswdigit(c) && c != L'-') { isNum = false; break; }
+                }
+                if (isNum && !idxStr.empty()) {
+                    iconIndex = _wtoi(idxStr.c_str());
+                    iconPath = iconPath.substr(0, commaPos);
+                }
+            }
+            
+            // Remove quotes if present
+            if (!iconPath.empty() && iconPath.front() == L'"' && iconPath.back() == L'"') {
+                iconPath = iconPath.substr(1, iconPath.length() - 2);
+            }
+            
+            HICON hIcon = NULL;
+            if (ExtractIconExW(iconPath.c_str(), iconIndex, NULL, &hIcon, 1) > 0 && hIcon != NULL) {
+                prog.iconIndex = ImageList_AddIcon(m_hProgImageList, hIcon);
+                DestroyIcon(hIcon);
+            } else {
+                // If extraction failed but path exists, try SHGetFileInfo
+                SHFILEINFOW sfi = {0};
+                if (SHGetFileInfoW(iconPath.c_str(), 0, &sfi, sizeof(sfi), SHGFI_ICON | SHGFI_SMALLICON)) {
+                    prog.iconIndex = ImageList_AddIcon(m_hProgImageList, sfi.hIcon);
+                    DestroyIcon(sfi.hIcon);
+                } else {
+                    prog.iconIndex = defaultIconIdx;
+                }
+            }
+        } else {
+            prog.iconIndex = defaultIconIdx;
+        }
+    }
+
     FilterProgramsList(hList, L"");
 }
 
@@ -294,9 +403,10 @@ void MainWindow::FilterProgramsList(HWND hList, const std::wstring& filter) {
         }
         
         LVITEMW lvi = {0};
-        lvi.mask = LVIF_TEXT | LVIF_PARAM;
+        lvi.mask = LVIF_TEXT | LVIF_PARAM | LVIF_IMAGE;
         lvi.iItem = row;
         lvi.iSubItem = 0;
+        lvi.iImage = prog.iconIndex;
         lvi.pszText = (LPWSTR)prog.displayName.c_str();
         lvi.lParam = static_cast<LPARAM>(i); // Store original index
         ListView_InsertItem(hList, &lvi);
@@ -410,7 +520,38 @@ INT_PTR CALLBACK MainWindow::ShredderDlgProc(HWND hWnd, UINT message, WPARAM wPa
 }
 
 INT_PTR MainWindow::HandleShredderMessage(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) {
-    if (message == WM_COMMAND) {
+    if (message == WM_SIZE) {
+        if (wParam != SIZE_MINIMIZED) {
+            RECT rcClient; GetClientRect(hWnd, &rcClient);
+            int w = rcClient.right, h = rcClient.bottom;
+            RECT rDLU = { 10, 25, 50, 0 }; MapDialogRect(hWnd, &rDLU);
+            int m10 = rDLU.left, m25 = rDLU.top, m50 = rDLU.right;
+            RECT rDLU3 = { 0, 2, 10, 0 }; MapDialogRect(hWnd, &rDLU3);
+            int m2 = rDLU3.top, gap = rDLU3.right;
+            
+            HWND hProg = GetDlgItem(hWnd, IDC_PROG_SHRED);
+            if (hProg) {
+                RECT rcP; GetWindowRect(hProg, &rcP); MapWindowPoints(HWND_DESKTOP, hWnd, (LPPOINT)&rcP, 2);
+                SetWindowPos(hProg, NULL, rcP.left, h - m25, w - rcP.left - m10, rcP.bottom - rcP.top, SWP_NOZORDER);
+            }
+            HWND hStop = GetDlgItem(hWnd, IDC_BTN_SHRED_STOP);
+            int bw = 75;
+            if (hStop) {
+                RECT rcS; GetWindowRect(hStop, &rcS); bw = rcS.right - rcS.left;
+                SetWindowPos(hStop, NULL, w - m10 - bw, h - m50 + m2, 0, 0, SWP_NOSIZE | SWP_NOZORDER);
+            }
+            HWND hPause = GetDlgItem(hWnd, IDC_BTN_SHRED_PAUSE);
+            if (hPause) {
+                SetWindowPos(hPause, NULL, w - m10 - bw - gap - bw, h - m50 + m2, 0, 0, SWP_NOSIZE | SWP_NOZORDER);
+            }
+            HWND hLbl = GetDlgItem(hWnd, IDC_LBL_SHRED_STATUS);
+            if (hLbl) {
+                RECT rcL; GetWindowRect(hLbl, &rcL); MapWindowPoints(HWND_DESKTOP, hWnd, (LPPOINT)&rcL, 2);
+                SetWindowPos(hLbl, NULL, rcL.left, h - m50, w - rcL.left - m10 - bw - gap - bw - gap, rcL.bottom - rcL.top, SWP_NOZORDER);
+            }
+        }
+        return (INT_PTR)TRUE;
+    } else if (message == WM_COMMAND) {
         int wmId = LOWORD(wParam);
         
         if (wmId == IDC_BTN_SHRED_FILE || wmId == IDC_BTN_SHRED_FOLDER) {
@@ -438,12 +579,37 @@ INT_PTR MainWindow::HandleShredderMessage(HWND hWnd, UINT message, WPARAM wParam
 
                             std::wstring confirmMsg = L"정말로 다음 항목을 복구 불가능하게 파쇄하시겠습니까?\n" + path;
                             if (MessageBoxW(hWnd, confirmMsg.c_str(), L"경고", MB_YESNO | MB_ICONWARNING) == IDYES) {
-                                std::thread([hWnd, path, passes, wmId]() {
+                                m_cancelShred = false;
+                                m_pauseShred = false;
+                                EnableWindow(GetDlgItem(hWnd, IDC_BTN_SHRED_FILE), FALSE);
+                                EnableWindow(GetDlgItem(hWnd, IDC_BTN_SHRED_FOLDER), FALSE);
+                                EnableWindow(GetDlgItem(hWnd, IDC_BTN_WIPE_FREESPACE), FALSE);
+                                ShowWindow(GetDlgItem(hWnd, IDC_BTN_SHRED_PAUSE), SW_SHOW);
+                                ShowWindow(GetDlgItem(hWnd, IDC_BTN_SHRED_STOP), SW_SHOW);
+                                SetDlgItemTextW(hWnd, IDC_BTN_SHRED_PAUSE, L"일시정지");
+                                
+                                std::thread([this, hWnd, path, passes, wmId]() {
+                                    auto cancelCheck = [this]() -> bool {
+                                        while (m_pauseShred) {
+                                            if (m_cancelShred) return true;
+                                            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                                        }
+                                        return m_cancelShred;
+                                    };
+                                    
                                     FileShredder::shredPath(path, passes, [hWnd](int p, const std::wstring&) {
                                         SendDlgItemMessage(hWnd, IDC_PROG_SHRED, PBM_SETPOS, p, 0);
-                                    });
-                                    MessageBoxW(hWnd, L"파쇄 완료.", L"알림", MB_OK);
+                                    }, cancelCheck);
+                                    
+                                    if (m_cancelShred) MessageBoxW(hWnd, L"파쇄 작업이 취소되었습니다.", L"알림", MB_OK);
+                                    else MessageBoxW(hWnd, L"파쇄 완료.", L"알림", MB_OK);
+                                    
                                     SendDlgItemMessage(hWnd, IDC_PROG_SHRED, PBM_SETPOS, 0, 0);
+                                    EnableWindow(GetDlgItem(hWnd, IDC_BTN_SHRED_FILE), TRUE);
+                                    EnableWindow(GetDlgItem(hWnd, IDC_BTN_SHRED_FOLDER), TRUE);
+                                    EnableWindow(GetDlgItem(hWnd, IDC_BTN_WIPE_FREESPACE), TRUE);
+                                    ShowWindow(GetDlgItem(hWnd, IDC_BTN_SHRED_PAUSE), SW_HIDE);
+                                    ShowWindow(GetDlgItem(hWnd, IDC_BTN_SHRED_STOP), SW_HIDE);
                                 }).detach();
                             }
                         }
@@ -461,8 +627,25 @@ INT_PTR MainWindow::HandleShredderMessage(HWND hWnd, UINT message, WPARAM wParam
             bool mftOnly = (IsDlgButtonChecked(hWnd, IDC_CHK_MFT_ONLY) == BST_CHECKED);
             WipeMode mode = mftOnly ? WipeMode::MftOnly : WipeMode::FullWipe;
             
+            m_cancelShred = false;
+            m_pauseShred = false;
+            EnableWindow(GetDlgItem(hWnd, IDC_BTN_SHRED_FILE), FALSE);
+            EnableWindow(GetDlgItem(hWnd, IDC_BTN_SHRED_FOLDER), FALSE);
+            EnableWindow(GetDlgItem(hWnd, IDC_BTN_WIPE_FREESPACE), FALSE);
+            ShowWindow(GetDlgItem(hWnd, IDC_BTN_SHRED_PAUSE), SW_SHOW);
+            ShowWindow(GetDlgItem(hWnd, IDC_BTN_SHRED_STOP), SW_SHOW);
+            SetDlgItemTextW(hWnd, IDC_BTN_SHRED_PAUSE, L"일시정지");
+
             std::wstring driveW(driveStr);
-            std::thread([hWnd, driveW, mode]() {
+            std::thread([this, hWnd, driveW, mode]() {
+                auto cancelCheck = [this]() -> bool {
+                    while (m_pauseShred) {
+                        if (m_cancelShred) return true;
+                        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                    }
+                    return m_cancelShred;
+                };
+
                 auto startTime = std::chrono::steady_clock::now();
                 std::vector<std::wstring> drivesToWipe;
                 
@@ -484,6 +667,7 @@ INT_PTR MainWindow::HandleShredderMessage(HWND hWnd, UINT message, WPARAM wParam
                 int currentDriveIndex = 0;
                 
                 for (const auto& drv : drivesToWipe) {
+                    if (m_cancelShred) break;
                     auto progressCb = [hWnd, drv, currentDriveIndex, totalDrives, startTime](int p) {
                         int overallProgress = (currentDriveIndex * 100 + p) / totalDrives;
                         
@@ -507,14 +691,28 @@ INT_PTR MainWindow::HandleShredderMessage(HWND hWnd, UINT message, WPARAM wParam
                         SetDlgItemTextW(hWnd, IDC_LBL_SHRED_STATUS, statusStr.c_str());
                     };
                     
-                    FileShredder::wipeFreeSpace(drv, mode, progressCb, nullptr);
+                    FileShredder::wipeFreeSpace(drv, mode, progressCb, cancelCheck);
                     currentDriveIndex++;
                 }
                 
-                MessageBoxW(hWnd, L"빈 공간 삭제 완료.", L"알림", MB_OK);
+                if (m_cancelShred) MessageBoxW(hWnd, L"빈 공간 삭제 작업이 취소되었습니다.", L"알림", MB_OK);
+                else MessageBoxW(hWnd, L"빈 공간 삭제 완료.", L"알림", MB_OK);
+
                 SetDlgItemTextW(hWnd, IDC_LBL_SHRED_STATUS, L"대기 중");
                 SendDlgItemMessage(hWnd, IDC_PROG_SHRED, PBM_SETPOS, 0, 0);
+                
+                EnableWindow(GetDlgItem(hWnd, IDC_BTN_SHRED_FILE), TRUE);
+                EnableWindow(GetDlgItem(hWnd, IDC_BTN_SHRED_FOLDER), TRUE);
+                EnableWindow(GetDlgItem(hWnd, IDC_BTN_WIPE_FREESPACE), TRUE);
+                ShowWindow(GetDlgItem(hWnd, IDC_BTN_SHRED_PAUSE), SW_HIDE);
+                ShowWindow(GetDlgItem(hWnd, IDC_BTN_SHRED_STOP), SW_HIDE);
             }).detach();
+        } else if (wmId == IDC_BTN_SHRED_PAUSE) {
+            m_pauseShred = !m_pauseShred;
+            SetDlgItemTextW(hWnd, IDC_BTN_SHRED_PAUSE, m_pauseShred ? L"계속" : L"일시정지");
+        } else if (wmId == IDC_BTN_SHRED_STOP) {
+            m_cancelShred = true;
+            m_pauseShred = false; // resume so it can exit
         }
     }
     return (INT_PTR)FALSE;
@@ -543,7 +741,18 @@ INT_PTR CALLBACK MainWindow::BrowserDlgProc(HWND hWnd, UINT message, WPARAM wPar
 }
 
 INT_PTR MainWindow::HandleBrowserMessage(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) {
-    if (message == WM_COMMAND && LOWORD(wParam) == IDC_BTN_CLEAN_BROWSER) {
+    if (message == WM_SIZE) {
+        if (wParam != SIZE_MINIMIZED) {
+            RECT rcClient; GetClientRect(hWnd, &rcClient);
+            RECT rDLU = { 10, 20, 0, 0 }; MapDialogRect(hWnd, &rDLU);
+            HWND hProg = GetDlgItem(hWnd, IDC_PROG_BROWSER);
+            if (hProg) {
+                RECT rcP; GetWindowRect(hProg, &rcP); MapWindowPoints(HWND_DESKTOP, hWnd, (LPPOINT)&rcP, 2);
+                SetWindowPos(hProg, NULL, rcP.left, rcClient.bottom - rDLU.top, rcClient.right - rcP.left - rDLU.left, rcP.bottom - rcP.top, SWP_NOZORDER);
+            }
+        }
+        return (INT_PTR)TRUE;
+    } else if (message == WM_COMMAND && LOWORD(wParam) == IDC_BTN_CLEAN_BROWSER) {
         std::vector<BrowserType> browsers;
         if (IsDlgButtonChecked(hWnd, IDC_CHK_CHROME) == BST_CHECKED) browsers.push_back(BrowserType::Chrome);
         if (IsDlgButtonChecked(hWnd, IDC_CHK_EDGE) == BST_CHECKED) browsers.push_back(BrowserType::Edge);
@@ -644,7 +853,56 @@ INT_PTR CALLBACK MainWindow::RecoveryDlgProc(HWND hWnd, UINT message, WPARAM wPa
 }
 
 INT_PTR MainWindow::HandleRecoveryMessage(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) {
-    if (message == WM_COMMAND) {
+    if (message == WM_SIZE) {
+        if (wParam != SIZE_MINIMIZED) {
+            RECT rcClient; GetClientRect(hWnd, &rcClient);
+            int w = rcClient.right, h = rcClient.bottom;
+            RECT rDLU = { 10, 65, 55, 31 }; MapDialogRect(hWnd, &rDLU);
+            int m10 = rDLU.left, m65 = rDLU.top, m55 = rDLU.right, m31 = rDLU.bottom;
+            RECT rDLU2 = { 18, 0, 0, 0 }; MapDialogRect(hWnd, &rDLU2);
+            int m18 = rDLU2.left;
+
+            HWND hSearch = GetDlgItem(hWnd, IDC_EDIT_REC_SEARCH);
+            if (hSearch) {
+                RECT rcS; GetWindowRect(hSearch, &rcS); MapWindowPoints(HWND_DESKTOP, hWnd, (LPPOINT)&rcS, 2);
+                SetWindowPos(hSearch, NULL, 0, 0, w - rcS.left - m10, rcS.bottom - rcS.top, SWP_NOMOVE | SWP_NOZORDER);
+            }
+            HWND hTree = GetDlgItem(hWnd, IDC_TREE_RECOVERY);
+            if (hTree) {
+                RECT rcT; GetWindowRect(hTree, &rcT); MapWindowPoints(HWND_DESKTOP, hWnd, (LPPOINT)&rcT, 2);
+                SetWindowPos(hTree, NULL, 0, 0, w - rcT.left - m10, h - rcT.top - m65, SWP_NOMOVE | SWP_NOZORDER);
+            }
+            
+            RECT rDLU3 = { 0, 2, 10, 0 }; MapDialogRect(hWnd, &rDLU3);
+            int m2 = rDLU3.top, gap = rDLU3.right;
+            HWND hStop = GetDlgItem(hWnd, IDC_BTN_REC_STOP);
+            int bw = 75;
+            if (hStop) {
+                RECT rcS; GetWindowRect(hStop, &rcS); bw = rcS.right - rcS.left;
+                SetWindowPos(hStop, NULL, w - m10 - bw, h - m55 + m2, 0, 0, SWP_NOSIZE | SWP_NOZORDER);
+            }
+            HWND hPause = GetDlgItem(hWnd, IDC_BTN_REC_PAUSE);
+            if (hPause) {
+                SetWindowPos(hPause, NULL, w - m10 - bw - gap - bw, h - m55 + m2, 0, 0, SWP_NOSIZE | SWP_NOZORDER);
+            }
+            HWND hLbl = GetDlgItem(hWnd, IDC_LBL_REC_STATUS);
+            if (hLbl) {
+                RECT rcL; GetWindowRect(hLbl, &rcL); MapWindowPoints(HWND_DESKTOP, hWnd, (LPPOINT)&rcL, 2);
+                SetWindowPos(hLbl, NULL, rcL.left, h - m55, w - rcL.left - m10 - bw - gap - bw - gap, rcL.bottom - rcL.top, SWP_NOZORDER);
+            }
+            HWND hProg = GetDlgItem(hWnd, IDC_PROG_REC);
+            if (hProg) {
+                RECT rcP; GetWindowRect(hProg, &rcP); MapWindowPoints(HWND_DESKTOP, hWnd, (LPPOINT)&rcP, 2);
+                SetWindowPos(hProg, NULL, rcP.left, h - m31, w - rcP.left - m10, rcP.bottom - rcP.top, SWP_NOZORDER);
+            }
+            HWND hBtn = GetDlgItem(hWnd, IDC_BTN_RECOVER);
+            if (hBtn) {
+                RECT rcB; GetWindowRect(hBtn, &rcB); int btnW = rcB.right - rcB.left;
+                SetWindowPos(hBtn, NULL, w - m10 - btnW, h - m18, 0, 0, SWP_NOSIZE | SWP_NOZORDER);
+            }
+        }
+        return (INT_PTR)TRUE;
+    } else if (message == WM_COMMAND) {
         int wmId = LOWORD(wParam);
         if (wmId == IDC_BTN_SCAN) {
             HWND hCombo = GetDlgItem(hWnd, IDC_CMB_DRIVE);
@@ -655,11 +913,26 @@ INT_PTR MainWindow::HandleRecoveryMessage(HWND hWnd, UINT message, WPARAM wParam
             ComboBox_GetLBText(hCombo, sel, driveStr);
             std::wstring drive(driveStr);
             
+            m_cancelRecovery = false;
+            m_pauseRecovery = false;
             EnableWindow(GetDlgItem(hWnd, IDC_BTN_SCAN), FALSE);
+            EnableWindow(GetDlgItem(hWnd, IDC_BTN_RECOVER), FALSE);
+            ShowWindow(GetDlgItem(hWnd, IDC_BTN_REC_PAUSE), SW_SHOW);
+            ShowWindow(GetDlgItem(hWnd, IDC_BTN_REC_STOP), SW_SHOW);
+            SetDlgItemTextW(hWnd, IDC_BTN_REC_PAUSE, L"일시정지");
+
             TreeView_DeleteAllItems(GetDlgItem(hWnd, IDC_TREE_RECOVERY));
             SetDlgItemTextW(hWnd, IDC_LBL_REC_STATUS, L"Scanning...");
             
             std::thread([this, hWnd, drive]() {
+                auto cancelCheck = [this]() -> bool {
+                    while (m_pauseRecovery) {
+                        if (m_cancelRecovery) return true;
+                        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                    }
+                    return m_cancelRecovery;
+                };
+
                 m_recoveredFiles.clear();
                 
                 auto startTime = std::chrono::steady_clock::now();
@@ -710,11 +983,12 @@ INT_PTR MainWindow::HandleRecoveryMessage(HWND hWnd, UINT message, WPARAM wParam
                     };
                     
                     NtfsRecovery ntfs;
-                    if (!ntfs.scanDrive(drv, m_recoveredFiles, progressCallback)) {
+                    if (!ntfs.scanDrive(drv, m_recoveredFiles, progressCallback, cancelCheck)) {
                         FatRecovery fat;
-                        fat.scanDrive(drv, m_recoveredFiles, progressCallback);
+                        fat.scanDrive(drv, m_recoveredFiles, progressCallback, cancelCheck);
                     }
                     
+                    if (m_cancelRecovery) break;
                     currentDriveIndex++;
                 }
                 
@@ -726,9 +1000,24 @@ INT_PTR MainWindow::HandleRecoveryMessage(HWND hWnd, UINT message, WPARAM wParam
                 
                 PopulateRecoveryTree(GetDlgItem(hWnd, IDC_TREE_RECOVERY));
                 EnableWindow(GetDlgItem(hWnd, IDC_BTN_SCAN), TRUE);
-                SetDlgItemTextW(hWnd, IDC_LBL_REC_STATUS, L"Scan complete.");
+                if (m_cancelRecovery) {
+                    SetDlgItemTextW(hWnd, IDC_LBL_REC_STATUS, L"스캔 작업이 취소되었습니다.");
+                } else {
+                    SetDlgItemTextW(hWnd, IDC_LBL_REC_STATUS, (std::to_wstring(m_recoveredFiles.size()) + L" files found.").c_str());
+                }
+                
                 SendDlgItemMessage(hWnd, IDC_PROG_REC, PBM_SETPOS, 0, 0);
+                EnableWindow(GetDlgItem(hWnd, IDC_BTN_SCAN), TRUE);
+                EnableWindow(GetDlgItem(hWnd, IDC_BTN_RECOVER), TRUE);
+                ShowWindow(GetDlgItem(hWnd, IDC_BTN_REC_PAUSE), SW_HIDE);
+                ShowWindow(GetDlgItem(hWnd, IDC_BTN_REC_STOP), SW_HIDE);
             }).detach();
+        } else if (wmId == IDC_BTN_REC_PAUSE) {
+            m_pauseRecovery = !m_pauseRecovery;
+            SetDlgItemTextW(hWnd, IDC_BTN_REC_PAUSE, m_pauseRecovery ? L"계속" : L"일시정지");
+        } else if (wmId == IDC_BTN_REC_STOP) {
+            m_cancelRecovery = true;
+            m_pauseRecovery = false; // resume so it can exit
         } else if (wmId == IDC_BTN_RECOVER) {
             HWND hTree = GetDlgItem(hWnd, IDC_TREE_RECOVERY);
             HTREEITEM hItem = TreeView_GetSelection(hTree);

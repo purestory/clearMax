@@ -119,13 +119,14 @@ bool FatRecovery::readBootSector() {
     return true;
 }
 
-uint32_t FatRecovery::getFatEntry(uint32_t cluster) {
+uint32_t FatRecovery::getFatEntry(uint32_t cluster, std::function<bool()> cancelCheck) {
     if (cluster < 2 || cluster >= m_totalClusters + 2) return 0x0FFFFFFF;
     uint32_t fatOffset = cluster * 4;
     uint32_t sector = m_fatStartSector + (fatOffset / m_bytesPerSector);
     uint32_t offsetInSector = fatOffset % m_bytesPerSector;
     
     std::vector<uint8_t> sectorBuf(m_bytesPerSector);
+    if (cancelCheck && cancelCheck()) return 0x0FFFFFFF;
     if (!readRaw(static_cast<int64_t>(sector) * m_bytesPerSector, m_bytesPerSector, sectorBuf.data())) {
         return 0x0FFFFFFF;
     }
@@ -134,14 +135,15 @@ uint32_t FatRecovery::getFatEntry(uint32_t cluster) {
     return nextCluster & 0x0FFFFFFF;
 }
 
-bool FatRecovery::readClusterChain(uint32_t startCluster, std::vector<uint8_t>& outData) {
+bool FatRecovery::readClusterChain(uint32_t startCluster, std::vector<uint8_t>& outData, std::function<bool()> cancelCheck) {
     uint32_t cluster = startCluster;
     while (cluster >= 2 && cluster < 0x0FFFFFF8) {
+        if (cancelCheck && cancelCheck()) break;
         int64_t offset = static_cast<int64_t>(m_dataStartSector + (cluster - 2) * m_sectorsPerCluster) * m_bytesPerSector;
         std::vector<uint8_t> clusterBuf(m_bytesPerCluster);
         if (!readRaw(offset, m_bytesPerCluster, clusterBuf.data())) break;
         outData.insert(outData.end(), clusterBuf.begin(), clusterBuf.end());
-        cluster = getFatEntry(cluster);
+        cluster = getFatEntry(cluster, cancelCheck);
     }
     return !outData.empty();
 }
@@ -163,9 +165,10 @@ std::wstring FatRecovery::parseShortName(const uint8_t* name) {
     return res;
 }
 
-void FatRecovery::scanDirectory(uint32_t startCluster, const std::wstring& currentPath, std::vector<RecoverableFile>& outFiles, std::function<void(int, const std::wstring&)> progressCallback) {
+void FatRecovery::scanDirectory(uint32_t startCluster, const std::wstring& currentPath, std::vector<RecoverableFile>& outFiles, std::function<void(int, const std::wstring&)> progressCallback, std::function<bool()> cancelCheck) {
+    if (cancelCheck && cancelCheck()) return;
     std::vector<uint8_t> dirData;
-    if (!readClusterChain(startCluster, dirData)) return;
+    if (!readClusterChain(startCluster, dirData, cancelCheck)) return;
     
     size_t numEntries = dirData.size() / sizeof(FAT_DIR_ENTRY);
     FAT_DIR_ENTRY* entries = reinterpret_cast<FAT_DIR_ENTRY*>(dirData.data());
@@ -189,7 +192,7 @@ void FatRecovery::scanDirectory(uint32_t startCluster, const std::wstring& curre
             
             // Check recoverability (very basic check for FAT: if start cluster is free in FAT table, it might be recoverable, but FAT chain is lost.
             // If the start cluster is marked free, we have to assume contiguous clusters.
-            uint32_t fatVal = getFatEntry(rf.fatStartCluster);
+            uint32_t fatVal = getFatEntry(rf.fatStartCluster, cancelCheck);
             if (fatVal == 0) {
                 rf.recoverability = L"Low"; // Chain is lost, contiguous recovery only
             } else if (fatVal >= 0x0FFFFFF8) {
@@ -206,14 +209,14 @@ void FatRecovery::scanDirectory(uint32_t startCluster, const std::wstring& curre
                 std::wstring dirName = parseShortName(entry.name);
                 uint32_t subCluster = (static_cast<uint32_t>(entry.fstClusHI) << 16) | entry.fstClusLO;
                 if (subCluster != 0 && subCluster != startCluster) {
-                    scanDirectory(subCluster, currentPath + L"/" + dirName, outFiles, progressCallback);
+                    scanDirectory(subCluster, currentPath + L"/" + dirName, outFiles, progressCallback, cancelCheck);
                 }
             }
         }
     }
 }
 
-bool FatRecovery::scanDrive(const std::wstring& drivePath, std::vector<RecoverableFile>& outFiles, std::function<void(int, const std::wstring&)> progressCallback) {
+bool FatRecovery::scanDrive(const std::wstring& drivePath, std::vector<RecoverableFile>& outFiles, std::function<void(int, const std::wstring&)> progressCallback, std::function<bool()> cancelCheck) {
     if (!openDrive(drivePath)) return false;
     
     if (progressCallback) progressCallback(5, L"Reading Boot Sector...");
@@ -224,7 +227,7 @@ bool FatRecovery::scanDrive(const std::wstring& drivePath, std::vector<Recoverab
     
     if (progressCallback) progressCallback(10, L"Scanning FAT Directories...");
     
-    scanDirectory(m_rootCluster, L"", outFiles, progressCallback);
+    scanDirectory(m_rootCluster, L"", outFiles, progressCallback, cancelCheck);
     
     if (progressCallback) progressCallback(100, L"Scan Complete");
     closeDrive();

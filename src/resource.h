@@ -24,6 +24,8 @@
 #define IDC_CMB_SHRED_PASSES            1015
 #define IDC_CMB_WIPE_DRIVE              1016
 #define IDC_CHK_MFT_ONLY                1017
+#define IDC_BTN_SHRED_PAUSE             1018
+#define IDC_BTN_SHRED_STOP              1019
 
 // Browser Cleaner Tab Controls
 #define IDC_CHK_CHROME                  1020
@@ -66,3 +68,5 @@
 #define IDC_TREE_RECOVERY               1061
 #define IDC_LBL_REC_STATUS              1062
 #define IDC_PROG_REC                    1063
+#define IDC_BTN_REC_PAUSE               1064
+#define IDC_BTN_REC_STOP                1065
