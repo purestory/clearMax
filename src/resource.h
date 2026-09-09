@@ -10,6 +10,7 @@
 #define IDD_TAB_BROWSER                 203
 #define IDD_TAB_RECOVERY                204
 #define IDD_CONFIG_DIALOG               205
+#define IDD_TAB_SETTINGS                206
 
 // Controls
 #define IDC_STATIC                      -1
@@ -70,3 +71,6 @@
 #define IDC_PROG_REC                    1063
 #define IDC_BTN_REC_PAUSE               1064
 #define IDC_BTN_REC_STOP                1065
+
+// Settings Controls
+#define IDC_CHK_AUTOSTART               1070

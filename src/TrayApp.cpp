@@ -89,12 +89,7 @@ void TrayApp::ShowContextMenu(POINT pt) {
     InsertMenuW(hMenu, -1, MF_BYPOSITION | MF_STRING, IDM_SHOW_UI, L"메인 화면 열기");
     InsertMenuW(hMenu, -1, MF_BYPOSITION | MF_SEPARATOR, 0, NULL);
     InsertMenuW(hMenu, -1, MF_BYPOSITION | MF_STRING, IDM_QUICK_DELETE, L"일괄 삭제 (Quick Delete)");
-    
-    UINT autoStartFlags = MF_BYPOSITION | MF_STRING;
-    if (IsAutoStartEnabled()) autoStartFlags |= MF_CHECKED;
-    InsertMenuW(hMenu, -1, autoStartFlags, IDM_AUTO_START, L"자동 시작");
-    
-    InsertMenuW(hMenu, -1, MF_BYPOSITION | MF_STRING, IDM_SETTINGS, L"설정...");
+    InsertMenuW(hMenu, -1, MF_BYPOSITION | MF_STRING, IDM_SETTINGS, L"일괄삭제 설정...");
     InsertMenuW(hMenu, -1, MF_BYPOSITION | MF_SEPARATOR, 0, NULL);
     InsertMenuW(hMenu, -1, MF_BYPOSITION | MF_STRING, IDM_EXIT, L"종료");
 
@@ -107,8 +102,6 @@ void TrayApp::ShowContextMenu(POINT pt) {
         if (m_pMainWindow) m_pMainWindow->Show();
     } else if (cmd == IDM_QUICK_DELETE) {
         RunQuickDelete();
-    } else if (cmd == IDM_AUTO_START) {
-        ToggleAutoStart();
     } else if (cmd == IDM_SETTINGS) {
         ShowConfigDialog();
     } else if (cmd == IDM_EXIT) {
@@ -255,32 +248,6 @@ std::wstring TrayApp::GetExePath() {
     wchar_t path[MAX_PATH];
     GetModuleFileNameW(NULL, path, MAX_PATH);
     return path;
-}
-
-bool TrayApp::IsAutoStartEnabled() {
-    HKEY hKey;
-    if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Run", 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
-        DWORD type;
-        if (RegQueryValueExW(hKey, L"clearMax", NULL, &type, NULL, NULL) == ERROR_SUCCESS) {
-            RegCloseKey(hKey);
-            return true;
-        }
-        RegCloseKey(hKey);
-    }
-    return false;
-}
-
-void TrayApp::ToggleAutoStart() {
-    HKEY hKey;
-    if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Run", 0, KEY_SET_VALUE, &hKey) == ERROR_SUCCESS) {
-        if (IsAutoStartEnabled()) {
-            RegDeleteValueW(hKey, L"clearMax");
-        } else {
-            std::wstring path = L"\"" + GetExePath() + L"\" /autostart";
-            RegSetValueExW(hKey, L"clearMax", 0, REG_SZ, (const BYTE*)path.c_str(), (path.length() + 1) * sizeof(wchar_t));
-        }
-        RegCloseKey(hKey);
-    }
 }
 
 void TrayApp::ShowConfigDialog() {

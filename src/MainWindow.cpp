@@ -14,7 +14,7 @@
 
 MainWindow::MainWindow(HINSTANCE hInstance) 
     : m_hInstance(hInstance), m_hWnd(NULL), m_hTabControl(NULL),
-      m_hTabPrograms(NULL), m_hTabShredder(NULL), m_hTabBrowser(NULL), m_hTabRecovery(NULL) {
+      m_hTabPrograms(NULL), m_hTabShredder(NULL), m_hTabBrowser(NULL), m_hTabRecovery(NULL), m_hTabSettings(NULL) {
     m_hProgImageList = ImageList_Create(16, 16, ILC_COLOR32 | ILC_MASK, 0, 100);
 }
 
@@ -125,10 +125,14 @@ void MainWindow::InitTabs() {
     tie.pszText = (LPWSTR)L"파일 복구";
     TabCtrl_InsertItem(m_hTabControl, 3, &tie);
 
+    tie.pszText = (LPWSTR)L"환경 설정";
+    TabCtrl_InsertItem(m_hTabControl, 4, &tie);
+
     m_hTabPrograms = CreateDialogParamW(m_hInstance, MAKEINTRESOURCEW(IDD_TAB_PROGRAMS), m_hTabControl, ProgramsDlgProc, (LPARAM)this);
     m_hTabShredder = CreateDialogParamW(m_hInstance, MAKEINTRESOURCEW(IDD_TAB_SHREDDER), m_hTabControl, ShredderDlgProc, (LPARAM)this);
     m_hTabBrowser  = CreateDialogParamW(m_hInstance, MAKEINTRESOURCEW(IDD_TAB_BROWSER), m_hTabControl, BrowserDlgProc, (LPARAM)this);
     m_hTabRecovery = CreateDialogParamW(m_hInstance, MAKEINTRESOURCEW(IDD_TAB_RECOVERY), m_hTabControl, RecoveryDlgProc, (LPARAM)this);
+    m_hTabSettings = CreateDialogParamW(m_hInstance, MAKEINTRESOURCEW(IDD_TAB_SETTINGS), m_hTabControl, SettingsDlgProc, (LPARAM)this);
 
     ResizeTabs();
     OnTabChanged();
@@ -139,17 +143,17 @@ void MainWindow::ResizeTabs() {
     GetClientRect(m_hTabControl, &rcClient);
     TabCtrl_AdjustRect(m_hTabControl, FALSE, &rcClient);
 
-    HWND tabs[] = { m_hTabPrograms, m_hTabShredder, m_hTabBrowser, m_hTabRecovery };
-    for (int i = 0; i < 4; ++i) {
+    HWND tabs[] = { m_hTabPrograms, m_hTabShredder, m_hTabBrowser, m_hTabRecovery, m_hTabSettings };
+    for (int i = 0; i < 5; ++i) {
         SetWindowPos(tabs[i], NULL, rcClient.left, rcClient.top, rcClient.right - rcClient.left, rcClient.bottom - rcClient.top, SWP_NOZORDER);
     }
 }
 
 void MainWindow::OnTabChanged() {
     int sel = TabCtrl_GetCurSel(m_hTabControl);
-    HWND tabs[] = { m_hTabPrograms, m_hTabShredder, m_hTabBrowser, m_hTabRecovery };
+    HWND tabs[] = { m_hTabPrograms, m_hTabShredder, m_hTabBrowser, m_hTabRecovery, m_hTabSettings };
     
-    for (int i = 0; i < 4; ++i) {
+    for (int i = 0; i < 5; ++i) {
         ShowWindow(tabs[i], (i == sel) ? SW_SHOW : SW_HIDE);
     }
 }
@@ -1248,6 +1252,88 @@ INT_PTR CALLBACK MainWindow::ConfigDlgProc(HWND hWnd, UINT message, WPARAM wPara
     } else if (message == WM_CLOSE) {
         EndDialog(hWnd, IDCANCEL);
         return (INT_PTR)TRUE;
+    }
+    return (INT_PTR)FALSE;
+}
+
+namespace {
+    bool RunCommandHidden(const std::wstring& cmd, DWORD& exitCode) {
+        STARTUPINFOW si = { sizeof(si) };
+        PROCESS_INFORMATION pi = { 0 };
+        si.dwFlags = STARTF_USESHOWWINDOW;
+        si.wShowWindow = SW_HIDE;
+
+        std::wstring cmdMutable = cmd;
+        if (CreateProcessW(NULL, &cmdMutable[0], NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, NULL, &si, &pi)) {
+            WaitForSingleObject(pi.hProcess, INFINITE);
+            GetExitCodeProcess(pi.hProcess, &exitCode);
+            CloseHandle(pi.hProcess);
+            CloseHandle(pi.hThread);
+            return true;
+        }
+        return false;
+    }
+}
+
+bool MainWindow::IsAutoStartEnabled() {
+    std::wstring cmd = L"schtasks /Query /TN \"clearMax_AutoStart\"";
+    DWORD exitCode = 0;
+    if (RunCommandHidden(cmd, exitCode)) {
+        return exitCode == 0;
+    }
+    return false;
+}
+
+void MainWindow::ToggleAutoStart(bool enable) {
+    if (!enable) {
+        if (IsAutoStartEnabled()) {
+            std::wstring cmd = L"schtasks /Delete /TN \"clearMax_AutoStart\" /F";
+            DWORD exitCode = 0;
+            RunCommandHidden(cmd, exitCode);
+        }
+    } else {
+        if (!IsAutoStartEnabled()) {
+            wchar_t path[MAX_PATH];
+            GetModuleFileNameW(NULL, path, MAX_PATH);
+            std::wstring exePath = path;
+            std::wstring cmd = L"schtasks /Create /TN \"clearMax_AutoStart\" /TR \"\\\"" + exePath + L"\\\" /autostart\" /SC ONLOGON /RL HIGHEST /F";
+            DWORD exitCode = 0;
+            RunCommandHidden(cmd, exitCode);
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Settings Tab
+// -----------------------------------------------------------------------------
+INT_PTR CALLBACK MainWindow::SettingsDlgProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) {
+    MainWindow* pThis = nullptr;
+    if (message == WM_INITDIALOG) {
+        pThis = (MainWindow*)lParam;
+        SetWindowLongPtr(hWnd, GWLP_USERDATA, (LONG_PTR)pThis);
+        
+        if (IsAutoStartEnabled()) {
+            CheckDlgButton(hWnd, IDC_CHK_AUTOSTART, BST_CHECKED);
+        } else {
+            CheckDlgButton(hWnd, IDC_CHK_AUTOSTART, BST_UNCHECKED);
+        }
+        
+        return (INT_PTR)TRUE;
+    } else {
+        pThis = (MainWindow*)GetWindowLongPtr(hWnd, GWLP_USERDATA);
+    }
+
+    if (pThis) return pThis->HandleSettingsMessage(hWnd, message, wParam, lParam);
+    return (INT_PTR)FALSE;
+}
+
+INT_PTR MainWindow::HandleSettingsMessage(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) {
+    if (message == WM_COMMAND) {
+        int wmId = LOWORD(wParam);
+        if (wmId == IDC_CHK_AUTOSTART) {
+            bool enable = (IsDlgButtonChecked(hWnd, IDC_CHK_AUTOSTART) == BST_CHECKED);
+            ToggleAutoStart(enable);
+        }
     }
     return (INT_PTR)FALSE;
 }

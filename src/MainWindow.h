@@ -21,6 +21,9 @@ public:
 
     static INT_PTR CALLBACK ConfigDlgProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam);
 
+    static bool IsAutoStartEnabled();
+    static void ToggleAutoStart(bool enable);
+
 private:
     HINSTANCE m_hInstance;
     HWND m_hWnd;
@@ -31,6 +34,7 @@ private:
     HWND m_hTabShredder;
     HWND m_hTabBrowser;
     HWND m_hTabRecovery;
+    HWND m_hTabSettings;
     
     // Tab Data
     std::vector<RecoverableFile> m_recoveredFiles;
@@ -43,6 +47,7 @@ private:
     static INT_PTR CALLBACK ShredderDlgProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam);
     static INT_PTR CALLBACK BrowserDlgProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam);
     static INT_PTR CALLBACK RecoveryDlgProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam);
+    static INT_PTR CALLBACK SettingsDlgProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam);
 
     // Instance Handlers
     INT_PTR HandleMainMessage(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam);
@@ -50,6 +55,7 @@ private:
     INT_PTR HandleShredderMessage(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam);
     INT_PTR HandleBrowserMessage(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam);
     INT_PTR HandleRecoveryMessage(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam);
+    INT_PTR HandleSettingsMessage(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam);
 
     // Helpers
     void InitTabs();

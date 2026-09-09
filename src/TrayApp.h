@@ -21,8 +21,6 @@ public:
     
     // Actions
     void RunQuickDelete();
-    void ToggleAutoStart();
-    bool IsAutoStartEnabled();
     void ShowConfigDialog();
 
     // Expose hidden window so main loop can send messages if needed
