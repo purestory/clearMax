@@ -25,6 +25,27 @@ bool isRunAsAdmin() {
     return fIsRunAsAdmin == TRUE;
 }
 
+static void ForceForeground(HWND hWnd) {
+    if (!hWnd) return;
+    HWND hCurWnd = ::GetForegroundWindow();
+    DWORD dwMyID = ::GetCurrentThreadId();
+    DWORD dwCurID = hCurWnd ? ::GetWindowThreadProcessId(hCurWnd, NULL) : 0;
+    
+    if (dwCurID != 0 && dwCurID != dwMyID) {
+        ::AttachThreadInput(dwCurID, dwMyID, TRUE);
+        ::SetWindowPos(hWnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
+        ::SetWindowPos(hWnd, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
+        ::SetForegroundWindow(hWnd);
+        ::BringWindowToTop(hWnd);
+        ::AttachThreadInput(dwCurID, dwMyID, FALSE);
+    } else {
+        ::SetWindowPos(hWnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
+        ::SetWindowPos(hWnd, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
+        ::SetForegroundWindow(hWnd);
+        ::BringWindowToTop(hWnd);
+    }
+}
+
 int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpCmdLine, int nCmdShow) {
     HANDLE hMutex = CreateMutexW(NULL, TRUE, L"Global\\ClearMax_SingleInstanceMutex");
     if (GetLastError() == ERROR_ALREADY_EXISTS) {
@@ -32,7 +53,7 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpCmd
         HWND hExisting = FindWindowW(L"#32770", L"clearMax"); // MainWindow is a Dialog (#32770)
         if (hExisting) {
             ShowWindow(hExisting, SW_RESTORE);
-            SetForegroundWindow(hExisting);
+            ForceForeground(hExisting);
         }
         CloseHandle(hMutex);
         return 0;

@@ -108,9 +108,9 @@ CAPTION "일괄 삭제 설정"
 FONT 9, "맑은 고딕", 400, 0, 0x1
 BEGIN
     GROUPBOX        "브라우저 정리 항목", IDC_STATIC, 10, 10, 200, 70
-    AUTOCHECKBOX    "인터넷 방문 기록", IDC_CHK_CFG_HISTORY, 20, 25, 120, 10
-    AUTOCHECKBOX    "캐시 (Cache)", IDC_CHK_CFG_CACHE, 20, 40, 120, 10
-    AUTOCHECKBOX    "쿠키 (Cookies)", IDC_CHK_CFG_COOKIES, 20, 55, 120, 10
+    AUTOCHECKBOX    "인터넷 방문 기록", IDC_CHK_CFG_HISTORY, 20, 25, 95, 10
+    AUTOCHECKBOX    "캐시 (Cache)", IDC_CHK_CFG_CACHE, 20, 40, 95, 10
+    AUTOCHECKBOX    "쿠키 (Cookies)", IDC_CHK_CFG_COOKIES, 20, 55, 95, 10
     AUTOCHECKBOX    "다운로드 기록", IDC_CHK_CFG_DOWNLOADS, 120, 25, 80, 10
     
     GROUPBOX        "디스크 빈 공간 삭제", IDC_STATIC, 10, 85, 200, 45

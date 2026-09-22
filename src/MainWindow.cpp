@@ -28,11 +28,31 @@ bool MainWindow::Initialize() {
     return true;
 }
 
+static void ForceForeground(HWND hWnd) {
+    if (!hWnd) return;
+    HWND hCurWnd = ::GetForegroundWindow();
+    DWORD dwMyID = ::GetCurrentThreadId();
+    DWORD dwCurID = hCurWnd ? ::GetWindowThreadProcessId(hCurWnd, NULL) : 0;
+    
+    if (dwCurID != 0 && dwCurID != dwMyID) {
+        ::AttachThreadInput(dwCurID, dwMyID, TRUE);
+        ::SetWindowPos(hWnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
+        ::SetWindowPos(hWnd, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
+        ::SetForegroundWindow(hWnd);
+        ::BringWindowToTop(hWnd);
+        ::AttachThreadInput(dwCurID, dwMyID, FALSE);
+    } else {
+        ::SetWindowPos(hWnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
+        ::SetWindowPos(hWnd, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
+        ::SetForegroundWindow(hWnd);
+        ::BringWindowToTop(hWnd);
+    }
+}
+
 void MainWindow::Show() {
     if (m_hWnd) {
         ShowWindow(m_hWnd, SW_RESTORE);
-        SetForegroundWindow(m_hWnd);
-        BringWindowToTop(m_hWnd);
+        ForceForeground(m_hWnd);
         UpdateWindow(m_hWnd);
     }
 }
