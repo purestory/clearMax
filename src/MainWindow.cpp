@@ -348,7 +348,7 @@ INT_PTR MainWindow::HandleProgramsMessage(HWND hWnd, UINT message, WPARAM wParam
         return (INT_PTR)TRUE;
     } else if (message == WM_COMMAND) {
         int wmId = LOWORD(wParam);
-        if (wmId == IDC_BTN_UNINSTALL || wmId == IDC_BTN_FORCE_REMOVE) {
+        if (wmId == IDC_BTN_UNINSTALL || wmId == IDC_BTN_FORCE_REMOVE || wmId == 1005) {
             HWND hList = GetDlgItem(hWnd, IDC_LIST_PROGRAMS);
             int sel = ListView_GetNextItem(hList, -1, LVNI_SELECTED);
             if (sel != -1 && sel < (int)m_programs.size()) {
@@ -363,9 +363,9 @@ INT_PTR MainWindow::HandleProgramsMessage(HWND hWnd, UINT message, WPARAM wParam
                 if (realIndex >= 0 && realIndex < (int)m_programs.size()) {
                     const ProgramInfo& info = m_programs[realIndex];
                     if (wmId == IDC_BTN_UNINSTALL) {
-                        RegistryMgr::uninstallProgram(info, [hWnd]() {
-                            PostMessageW(hWnd, WM_COMMAND, MAKEWPARAM(IDC_BTN_PROG_REFRESH, 0), 0);
-                        });
+                        RegistryMgr::uninstallProgram(info, nullptr);
+                        MessageBoxW(hWnd, L"삭제 관리자가 실행되었습니다.\n삭제가 완료되면 '확인'을 눌러 목록을 새로고침 하세요.", L"알림", MB_OK | MB_ICONINFORMATION);
+                        PopulateProgramsList(hList);
                     } else if (wmId == IDC_BTN_FORCE_REMOVE) {
                         if (MessageBoxW(hWnd, L"정말로 이 항목을 레지스트리 및 디스크에서 강제로 삭제하시겠습니까?", L"경고", MB_YESNO | MB_ICONWARNING) == IDYES) {
                             bool rebootRequired = false;
@@ -379,6 +379,27 @@ INT_PTR MainWindow::HandleProgramsMessage(HWND hWnd, UINT message, WPARAM wParam
                             } else {
                                 MessageBoxW(hWnd, L"삭제 실패.", L"오류", MB_OK | MB_ICONERROR);
                             }
+                        }
+                    } else if (wmId == 1005) {
+                        std::wstring path = info.installLocation;
+                        if (path.empty() && !info.uninstallString.empty()) {
+                            std::wstring exe = info.uninstallString;
+                            if (exe.front() == L'"') {
+                                size_t pos = exe.find(L'"', 1);
+                                if (pos != std::wstring::npos) exe = exe.substr(1, pos - 1);
+                            } else {
+                                size_t exePos = exe.find(L".exe");
+                                if (exePos != std::wstring::npos) exe = exe.substr(0, exePos + 4);
+                            }
+                            size_t lastSlash = exe.find_last_of(L"\\/");
+                            if (lastSlash != std::wstring::npos) {
+                                path = exe.substr(0, lastSlash);
+                            }
+                        }
+                        if (!path.empty()) {
+                            ShellExecuteW(NULL, L"explore", path.c_str(), NULL, NULL, SW_SHOWNORMAL);
+                        } else {
+                            MessageBoxW(hWnd, L"설치 폴더 경로를 찾을 수 없습니다.", L"알림", MB_OK);
                         }
                     }
                 }
@@ -634,6 +655,8 @@ void MainWindow::ShowProgramsContextMenu(HWND hWnd, POINT pt) {
     HMENU hMenu = CreatePopupMenu();
     InsertMenuW(hMenu, -1, MF_BYPOSITION | MF_STRING, IDC_BTN_UNINSTALL, L"일반 제거 (Uninstall)");
     InsertMenuW(hMenu, -1, MF_BYPOSITION | MF_STRING, IDC_BTN_FORCE_REMOVE, L"강제 삭제 (Force Remove)");
+    InsertMenuW(hMenu, -1, MF_BYPOSITION | MF_SEPARATOR, 0, NULL);
+    InsertMenuW(hMenu, -1, MF_BYPOSITION | MF_STRING, 1005, L"설치 폴더 열기 (Open Folder)");
     
     int ret = TrackPopupMenu(hMenu, TPM_RETURNCMD | TPM_NONOTIFY, pt.x, pt.y, 0, hWnd, NULL);
     DestroyMenu(hMenu);
