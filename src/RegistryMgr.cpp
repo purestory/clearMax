@@ -51,7 +51,8 @@ void RegistryMgr::scanRegistryKey(HKEY rootKey, const std::wstring& subKeyPath, 
 
     for (DWORD i = 0; i < subKeysCount; ++i) {
         DWORD keyNameLen = maxSubKeyLen + 1;
-        if (RegEnumKeyExW(hKey, i, keyNameBuffer.data(), &keyNameLen, nullptr, nullptr, nullptr, nullptr) == ERROR_SUCCESS) {
+        FILETIME ftLastWriteTime;
+        if (RegEnumKeyExW(hKey, i, keyNameBuffer.data(), &keyNameLen, nullptr, nullptr, nullptr, &ftLastWriteTime) == ERROR_SUCCESS) {
             std::wstring appKeyName = keyNameBuffer.data();
             std::wstring fullAppKeyPath = subKeyPath + L"\\" + appKeyName;
             
@@ -70,10 +71,11 @@ void RegistryMgr::scanRegistryKey(HKEY rootKey, const std::wstring& subKeyPath, 
                     uninstallString = L"msiexec.exe /X" + appKeyName;
                 }
                 
-                std::wstring systemComponent = getRegString(hAppKey, L"SystemComponent");
+                DWORD systemComponentDw = getRegDword(hAppKey, L"SystemComponent");
+                std::wstring systemComponentStr = getRegString(hAppKey, L"SystemComponent");
 
                 // Filter out system components and empty names
-                if (!displayName.empty() && systemComponent != L"1") {
+                if (!displayName.empty() && systemComponentDw != 1 && systemComponentStr != L"1") {
                     ProgramInfo info;
                     info.displayName = displayName;
                     info.displayVersion = getRegString(hAppKey, L"DisplayVersion");
@@ -81,7 +83,17 @@ void RegistryMgr::scanRegistryKey(HKEY rootKey, const std::wstring& subKeyPath, 
                     info.uninstallString = uninstallString;
                     info.registryKeyPath = fullAppKeyPath;
                     info.displayIcon = getRegString(hAppKey, L"DisplayIcon");
+                    
                     info.installDate = getRegString(hAppKey, L"InstallDate");
+                    if (info.installDate.empty()) {
+                        SYSTEMTIME stUTC, stLocal;
+                        if (FileTimeToSystemTime(&ftLastWriteTime, &stUTC) && SystemTimeToTzSpecificLocalTime(NULL, &stUTC, &stLocal)) {
+                            wchar_t buf[16];
+                            swprintf(buf, 16, L"%04d%02d%02d", stLocal.wYear, stLocal.wMonth, stLocal.wDay);
+                            info.installDate = buf;
+                        }
+                    }
+                    
                     info.estimatedSize = getRegDword(hAppKey, L"EstimatedSize");
                     
                     auto checkPathExists = [](const std::wstring& path) -> bool {
