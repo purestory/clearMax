@@ -11,6 +11,8 @@
 #define IDD_TAB_RECOVERY                204
 #define IDD_CONFIG_DIALOG               205
 #define IDD_TAB_SETTINGS                206
+#define IDD_TAB_STARTUP                 207
+#define IDD_TAB_ANALYZER                208
 
 // Controls
 #define IDC_STATIC                      -1
@@ -36,8 +38,12 @@
 #define IDC_CHK_COOKIES                 1024
 #define IDC_CHK_HISTORY                 1025
 #define IDC_CHK_DOWNLOADS               1026
-#define IDC_BTN_CLEAN_BROWSER           1027
+#define IDC_BTN_CLEAN_ALL               1027
 #define IDC_PROG_BROWSER                1028
+#define IDC_CHK_SYS_TEMP                1090
+#define IDC_CHK_SYS_PREFETCH            1091
+#define IDC_CHK_SYS_RECYCLEBIN          1092
+#define IDC_CHK_SYS_LOGS                1093
 
 // Recovery Tab Controls
 #define IDC_CMB_DRIVE                   1030
@@ -56,6 +62,7 @@
 #define IDD_QUICK_PROGRESS_DIALOG       1047
 #define IDC_LBL_QUICK_STATUS            1048
 #define IDC_PROG_QUICK                  1049
+#define IDC_CHK_CONTEXT_MENU            1071
 
 // Program Auto-Start Controls
 #define IDC_EDIT_PROG_SEARCH            1050
@@ -74,3 +81,26 @@
 
 // Settings Controls
 #define IDC_CHK_AUTOSTART               1070
+
+// Startup Manager Controls
+#define IDC_LIST_STARTUP                1080
+#define IDC_BTN_STARTUP_REFRESH         1081
+#define IDC_BTN_STARTUP_ENABLE          1082
+#define IDC_BTN_STARTUP_DISABLE         1083
+#define IDC_BTN_STARTUP_DELETE          1084
+#define IDC_CMB_STARTUP_FILTER          1085
+
+// Analyzer Tab Controls
+#define IDC_CMB_ANALYZER_DRIVE          1100
+#define IDC_BTN_ANALYZER_SCAN           1101
+#define IDC_BTN_ANALYZER_UP             1102
+#define IDC_TREE_ANALYZER               1103
+#define IDC_PROG_ANALYZER               1104
+#define IDC_LBL_ANALYZER_PATH           1105
+#define IDC_CMB_ANALYZER_SORT           1106
+
+#define IDC_CHK_CFG_SYS_TEMP            1110
+#define IDC_CHK_CFG_SYS_PREFETCH        1111
+#define IDC_CHK_CFG_SYS_RECYCLEBIN      1112
+#define IDC_CHK_CFG_SYS_LOGS            1113
+

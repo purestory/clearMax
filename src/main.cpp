@@ -47,13 +47,48 @@ static void ForceForeground(HWND hWnd) {
 }
 
 int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpCmdLine, int nCmdShow) {
+    bool autoShred = false;
+    std::wstring shredPath = L"";
+    bool autoAnalyze = false;
+    std::wstring analyzePath = L"";
+    
+    int argc = 0;
+    LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+    if (argv) {
+        for (int i = 1; i < argc; ++i) {
+            if (_wcsicmp(argv[i], L"/shred") == 0 && i + 1 < argc) {
+                autoShred = true;
+                shredPath = argv[i + 1];
+                break;
+            } else if (_wcsicmp(argv[i], L"/analyze") == 0 && i + 1 < argc) {
+                autoAnalyze = true;
+                analyzePath = argv[i + 1];
+                break;
+            }
+        }
+        LocalFree(argv);
+    }
+
     HANDLE hMutex = CreateMutexW(NULL, TRUE, L"Global\\ClearMax_SingleInstanceMutex");
     if (GetLastError() == ERROR_ALREADY_EXISTS) {
-        // Bring existing instance to front
-        HWND hExisting = FindWindowW(L"#32770", L"clearMax"); // MainWindow is a Dialog (#32770)
+        HWND hExisting = FindWindowW(L"#32770", L"clearMax");
         if (hExisting) {
-            ShowWindow(hExisting, SW_RESTORE);
-            ForceForeground(hExisting);
+            if (autoShred && !shredPath.empty()) {
+                COPYDATASTRUCT cds;
+                cds.dwData = 1;
+                cds.cbData = (shredPath.length() + 1) * sizeof(wchar_t);
+                cds.lpData = (void*)shredPath.c_str();
+                SendMessageW(hExisting, WM_COPYDATA, 0, (LPARAM)&cds);
+            } else if (autoAnalyze && !analyzePath.empty()) {
+                COPYDATASTRUCT cds;
+                cds.dwData = 2;
+                cds.cbData = (analyzePath.length() + 1) * sizeof(wchar_t);
+                cds.lpData = (void*)analyzePath.c_str();
+                SendMessageW(hExisting, WM_COPYDATA, 0, (LPARAM)&cds);
+            } else {
+                ShowWindow(hExisting, SW_RESTORE);
+                ForceForeground(hExisting);
+            }
         }
         CloseHandle(hMutex);
         return 0;
@@ -85,7 +120,13 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpCmd
         isAutoStart = true;
     }
 
-    if (!isAutoStart) {
+    if (autoShred && !shredPath.empty()) {
+        mainWin.SetPendingShredPath(shredPath);
+        mainWin.Show();
+    } else if (autoAnalyze && !analyzePath.empty()) {
+        mainWin.SetPendingAnalyzePath(analyzePath);
+        mainWin.Show();
+    } else if (!isAutoStart) {
         mainWin.Show(); // Show window on normal startup
     }
 

@@ -15,6 +15,8 @@ struct ProgramInfo {
     std::wstring installDate; // YYYYMMDD format
     DWORD estimatedSize; // Size in KB
     bool isGhost; // true if files don't exist but registry remains
+    std::wstring installLocation;
+    std::wstring lastUsedDate;
 };
 
 class RegistryMgr {
@@ -25,7 +27,12 @@ public:
     static bool uninstallProgram(const ProgramInfo& info, std::function<void()> onFinished = nullptr);
     
     // Force remove registry key and attempt to shred remaining files in install location
-    static bool forceRemoveProgram(const ProgramInfo& info);
+    static bool forceRemoveProgram(const ProgramInfo& info, bool& rebootRequired);
+
+    static std::wstring fetchLastUsedDate(const std::wstring& installLocation, const std::wstring& uninstallString);
+
+    static bool isContextMenuEnabled();
+    static bool setContextMenuEnabled(bool enable);
 
 private:
     static void scanRegistryKey(HKEY rootKey, const std::wstring& subKey, std::vector<ProgramInfo>& programs);

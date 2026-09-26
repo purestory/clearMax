@@ -22,6 +22,10 @@ set(SOURCES
     src/RegistryMgr.h
     src/BrowserCleaner.cpp
     src/BrowserCleaner.h
+    src/SystemCleaner.cpp
+    src/SystemCleaner.h
+    src/SpaceAnalyzer.cpp
+    src/SpaceAnalyzer.h
     src/NtfsRecovery.cpp
     src/NtfsRecovery.h
     src/FatRecovery.cpp
@@ -31,6 +35,8 @@ set(SOURCES
     src/TrayApp.h
     src/MainWindow.cpp
     src/MainWindow.h
+    src/StartupMgr.cpp
+    src/StartupMgr.h
     clearMax.rc
 )
 

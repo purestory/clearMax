@@ -1,6 +1,7 @@
 #include "TrayApp.h"
 #include "MainWindow.h"
 #include "BrowserCleaner.h"
+#include "SystemCleaner.h"
 #include "FileShredder.h"
 #include "resource.h"
 #include <thread>
@@ -127,6 +128,10 @@ INT_PTR CALLBACK TrayApp::QuickDeleteDlgProc(HWND hWnd, UINT message, WPARAM wPa
             bool doCache = true;
             bool doCookies = false;
             bool doDownloads = false;
+            bool doSysTemp = true;
+            bool doSysPrefetch = false;
+            bool doSysRecycleBin = true;
+            bool doSysLogs = false;
             bool doAllDrives = true;
             bool doMftOnly = true;
             
@@ -145,6 +150,10 @@ INT_PTR CALLBACK TrayApp::QuickDeleteDlgProc(HWND hWnd, UINT message, WPARAM wPa
                 readConfig(L"CfgCache", doCache);
                 readConfig(L"CfgCookies", doCookies);
                 readConfig(L"CfgDownloads", doDownloads);
+                readConfig(L"CfgSysTemp", doSysTemp);
+                readConfig(L"CfgSysPrefetch", doSysPrefetch);
+                readConfig(L"CfgSysRecycleBin", doSysRecycleBin);
+                readConfig(L"CfgSysLogs", doSysLogs);
                 readConfig(L"CfgAllDrives", doAllDrives);
                 readConfig(L"CfgMftOnly", doMftOnly);
                 
@@ -162,6 +171,14 @@ INT_PTR CALLBACK TrayApp::QuickDeleteDlgProc(HWND hWnd, UINT message, WPARAM wPa
                 BrowserCleaner::cleanBrowserData(BrowserType::Chrome, types, ShredPass::Pass_1, nullptr);
                 BrowserCleaner::cleanBrowserData(BrowserType::Edge, types, ShredPass::Pass_1, nullptr);
                 BrowserCleaner::cleanBrowserData(BrowserType::Firefox, types, ShredPass::Pass_1, nullptr);
+            }
+
+            if (doSysTemp || doSysPrefetch || doSysRecycleBin || doSysLogs) {
+                SetDlgItemTextW(ctx->hDlg, IDC_LBL_QUICK_STATUS, L"시스템 파일 정리 중...");
+                if (doSysTemp) SystemCleaner::cleanTempFiles(ShredPass::Pass_1, nullptr);
+                if (doSysPrefetch) SystemCleaner::cleanPrefetch(ShredPass::Pass_1, nullptr);
+                if (doSysRecycleBin) SystemCleaner::emptyRecycleBin(ShredPass::Pass_1, nullptr);
+                if (doSysLogs) SystemCleaner::cleanSystemLogs(ShredPass::Pass_1, nullptr);
             }
 
             WipeMode wipeMode = doMftOnly ? WipeMode::MftOnly : WipeMode::FullWipe;
