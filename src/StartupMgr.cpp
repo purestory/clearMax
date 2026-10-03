@@ -47,6 +47,7 @@ static void ScanRegistryRunKey(HKEY root, const std::wstring& subKey, const std:
 static void ScanStartupFolder(int csidl, const std::wstring& locationName, std::vector<StartupItem>& items) {
     wchar_t path[MAX_PATH];
     if (SUCCEEDED(SHGetFolderPathW(NULL, csidl, NULL, 0, path))) {
+        // 1. Scan Enabled (in actual Startup folder)
         std::wstring searchPath = std::wstring(path) + L"\\*";
         WIN32_FIND_DATAW fd;
         HANDLE hFind = FindFirstFileW(searchPath.c_str(), &fd);
@@ -54,6 +55,8 @@ static void ScanStartupFolder(int csidl, const std::wstring& locationName, std::
             do {
                 if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
                     std::wstring fileName = fd.cFileName;
+                    if (fileName == L"desktop.ini") continue;
+                    
                     bool isEnabled = true;
                     if (fileName.length() > 9 && fileName.substr(fileName.length() - 9) == L".disabled") {
                         isEnabled = false;
@@ -67,6 +70,31 @@ static void ScanStartupFolder(int csidl, const std::wstring& locationName, std::
                     item.isEnabled = isEnabled;
                     item.isFolderShortcut = true;
                     item.shortcutPath = item.command;
+                    item.csidl = csidl;
+                    items.push_back(item);
+                }
+            } while (FindNextFileW(hFind, &fd));
+            FindClose(hFind);
+        }
+
+        // 2. Scan Disabled (in StartupDisabled folder)
+        std::wstring disabledPath = std::wstring(path) + L"Disabled";
+        searchPath = disabledPath + L"\\*";
+        hFind = FindFirstFileW(searchPath.c_str(), &fd);
+        if (hFind != INVALID_HANDLE_VALUE) {
+            do {
+                if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
+                    std::wstring fileName = fd.cFileName;
+                    if (fileName == L"desktop.ini") continue;
+                    
+                    StartupItem item;
+                    item.name = fileName;
+                    item.command = disabledPath + L"\\" + fd.cFileName;
+                    item.location = locationName;
+                    item.isEnabled = false;
+                    item.isFolderShortcut = true;
+                    item.shortcutPath = item.command;
+                    item.csidl = csidl;
                     items.push_back(item);
                 }
             } while (FindNextFileW(hFind, &fd));
@@ -277,19 +305,33 @@ bool StartupMgr::setStartupItemState(StartupItem& item, bool enable) {
     }
 
     if (item.isFolderShortcut) {
-        std::wstring newPath = item.shortcutPath;
-        if (enable) {
-            if (newPath.length() > 9 && newPath.substr(newPath.length() - 9) == L".disabled") {
-                newPath = newPath.substr(0, newPath.length() - 9);
+        wchar_t rootPath[MAX_PATH];
+        if (SUCCEEDED(SHGetFolderPathW(NULL, item.csidl, NULL, 0, rootPath))) {
+            std::wstring enabledDir = rootPath;
+            std::wstring disabledDir = enabledDir + L"Disabled";
+            
+            // Ensure Disabled directory exists
+            if (!enable) {
+                CreateDirectoryW(disabledDir.c_str(), NULL);
             }
-        } else {
-            newPath += L".disabled";
+            
+            std::wstring fileName = fs::path(item.shortcutPath).filename().wstring();
+            
+            // Handle old .disabled suffix if present
+            if (enable && fileName.length() > 9 && fileName.substr(fileName.length() - 9) == L".disabled") {
+                fileName = fileName.substr(0, fileName.length() - 9);
+            }
+            
+            std::wstring newPath = (enable ? enabledDir : disabledDir) + L"\\" + fileName;
+            
+            if (MoveFileW(item.shortcutPath.c_str(), newPath.c_str())) {
+                item.shortcutPath = newPath;
+                item.isEnabled = enable;
+                item.name = fileName;
+                return true;
+            }
         }
-        if (MoveFileW(item.shortcutPath.c_str(), newPath.c_str())) {
-            item.shortcutPath = newPath;
-            item.isEnabled = enable;
-            return true;
-        }
+        return false;
     } else {
         std::wstring newSubKey = item.regKeyPath;
         if (enable) {

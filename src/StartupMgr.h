@@ -13,6 +13,7 @@ struct StartupItem {
     HKEY regRoot;
     bool isFolderShortcut;
     std::wstring shortcutPath;
+    int csidl = 0;
     
     // Scheduled Task specific
     bool isScheduledTask = false;
