@@ -407,8 +407,8 @@ INT_PTR MainWindow::HandleProgramsMessage(HWND hWnd, UINT message, WPARAM wParam
                 MessageBoxW(hWnd, L"프로그램을 선택해주세요.", L"알림", MB_OK);
             }
         } else if (wmId == IDC_BTN_PROG_REFRESH) {
-            PopulateProgramsList(GetDlgItem(hWnd, IDC_LIST_PROGRAMS));
             SetDlgItemTextW(hWnd, IDC_EDIT_PROG_SEARCH, L"");
+            PopulateProgramsList(GetDlgItem(hWnd, IDC_LIST_PROGRAMS));
         } else if (HIWORD(wParam) == EN_CHANGE && wmId == IDC_EDIT_PROG_SEARCH) {
             wchar_t searchBuf[256];
             GetDlgItemTextW(hWnd, IDC_EDIT_PROG_SEARCH, searchBuf, 256);
@@ -530,7 +530,9 @@ void MainWindow::PopulateProgramsList(HWND hList) {
         }
     }
 
-    FilterProgramsList(hList, L"");
+    wchar_t searchBuf[256] = {0};
+    GetDlgItemTextW(GetParent(hList), IDC_EDIT_PROG_SEARCH, searchBuf, 256);
+    FilterProgramsList(hList, searchBuf);
 
     int epoch = ++m_dateFetchEpoch;
     HWND hTabProg = m_hTabPrograms;
@@ -1868,8 +1870,9 @@ INT_PTR MainWindow::HandleAnalyzerMessage(HWND hWnd, UINT message, WPARAM wParam
             }
             SendMessageW(hCombo, CB_SETCURSEL, 0, 0);
 
-            // Set up TreeView with system image list
+            // Set up TreeView with system image list and double buffering
             HWND hTree = GetDlgItem(hWnd, IDC_TREE_ANALYZER);
+            TreeView_SetExtendedStyle(hTree, TVS_EX_DOUBLEBUFFER, TVS_EX_DOUBLEBUFFER);
             SHFILEINFOW sfi = {0};
             HIMAGELIST hImageList = (HIMAGELIST)SHGetFileInfoW(L"C:\\", 0, &sfi, sizeof(sfi), SHGFI_SYSICONINDEX | SHGFI_SMALLICON);
             TreeView_SetImageList(hTree, hImageList, TVSIL_NORMAL);
@@ -1995,14 +1998,11 @@ INT_PTR MainWindow::HandleAnalyzerMessage(HWND hWnd, UINT message, WPARAM wParam
                 HWND hTree = GetDlgItem(hWnd, IDC_TREE_ANALYZER);
                 HTREEITEM hRoot = TreeView_GetRoot(hTree);
                 if (hRoot) {
-                    SendMessage(hTree, WM_SETREDRAW, FALSE, 0);
-                    
                     if (!(TreeView_GetItemState(hTree, hRoot, TVIS_EXPANDED) & TVIS_EXPANDED)) {
                         TreeView_Expand(hTree, hRoot, TVE_EXPAND);
                     }
                     
                     UpdateTreeViewNode(hTree, hRoot);
-                    SendMessage(hTree, WM_SETREDRAW, TRUE, 0);
                     // Force redraw for custom draw background
                     InvalidateRect(hTree, NULL, FALSE);
                 }
@@ -2139,12 +2139,8 @@ INT_PTR MainWindow::HandleAnalyzerMessage(HWND hWnd, UINT message, WPARAM wParam
 
         case WM_APP + 201: {
             HWND hTree = (HWND)wParam;
-            HTREEITEM hFirstVis = (HTREEITEM)lParam;
-            if (hFirstVis) {
-                SendMessage(hTree, TVM_SELECTITEM, TVGN_FIRSTVISIBLE, (LPARAM)hFirstVis);
-            }
-            SendMessage(hTree, WM_SETREDRAW, TRUE, 0);
-            InvalidateRect(hTree, NULL, TRUE);
+            int scrollPos = (int)lParam;
+            SendMessage(hTree, WM_VSCROLL, MAKEWPARAM(SB_THUMBPOSITION, scrollPos), 0);
             return (INT_PTR)TRUE;
         }
 
@@ -2155,6 +2151,11 @@ INT_PTR MainWindow::HandleAnalyzerMessage(HWND hWnd, UINT message, WPARAM wParam
                     LPNMTREEVIEWW pnmtv = (LPNMTREEVIEWW)lParam;
                     if (pnmtv->action == TVE_EXPAND) {
                         HWND hTree = GetDlgItem(hWnd, IDC_TREE_ANALYZER);
+                        
+                        // Prevent jumping by saving and restoring scroll pos
+                        int scrollPos = GetScrollPos(hTree, SB_VERT);
+                        SendMessage(hTree, WM_SETREDRAW, FALSE, 0);
+
                         HTREEITEM hChild = TreeView_GetChild(hTree, pnmtv->itemNew.hItem);
                         if (!hChild) {
                             DirNode* node = (DirNode*)pnmtv->itemNew.lParam;
@@ -2183,10 +2184,8 @@ INT_PTR MainWindow::HandleAnalyzerMessage(HWND hWnd, UINT message, WPARAM wParam
                             }
                         }
                         
-                        // Prevent jumping by saving and restoring scroll pos
-                        HTREEITEM hFirstVis = TreeView_GetFirstVisible(hTree);
-                        SendMessage(hTree, WM_SETREDRAW, FALSE, 0);
-                        PostMessage(hWnd, WM_APP + 201, (WPARAM)hTree, (LPARAM)hFirstVis);
+                        SendMessage(hTree, WM_SETREDRAW, TRUE, 0);
+                        PostMessage(hWnd, WM_APP + 201, (WPARAM)hTree, (LPARAM)scrollPos);
                     }
                 } else if (lpnm->code == NM_CUSTOMDRAW) {
                     LPNMTVCUSTOMDRAW pcd = (LPNMTVCUSTOMDRAW)lParam;
@@ -2235,7 +2234,7 @@ INT_PTR MainWindow::HandleAnalyzerMessage(HWND hWnd, UINT message, WPARAM wParam
                                 rcName.right = rcClient.right;
                                 DrawTextW(hdc, node->name.c_str(), -1, &rcName, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
                             }
-                            SetWindowLongPtr(hWnd, DWLP_MSGRESULT, CDRF_SKIPDEFAULT);
+                            SetWindowLongPtr(hWnd, DWLP_MSGRESULT, CDRF_DODEFAULT);
                             return (INT_PTR)TRUE;
                         }
                     }
