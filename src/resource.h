@@ -44,6 +44,7 @@
 #define IDC_CHK_SYS_PREFETCH            1091
 #define IDC_CHK_SYS_RECYCLEBIN          1092
 #define IDC_CHK_SYS_LOGS                1093
+#define IDC_CHK_SYS_STARTUP             1094
 
 // Recovery Tab Controls
 #define IDC_CMB_DRIVE                   1030

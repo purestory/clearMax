@@ -19,6 +19,8 @@
 #define IDM_SETTINGS 2004
 #define IDM_EXIT 2005
 
+UINT TrayApp::s_uTaskbarRestart = 0;
+
 LRESULT CALLBACK TrayApp::HiddenWndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) {
     if (message == WM_CREATE) {
         LPCREATESTRUCT pCreateStruct = reinterpret_cast<LPCREATESTRUCT>(lParam);
@@ -30,6 +32,12 @@ LRESULT CALLBACK TrayApp::HiddenWndProc(HWND hWnd, UINT message, WPARAM wParam, 
         if (tray) {
             tray->HandleTrayMessage(lParam);
         }
+    } else if (s_uTaskbarRestart != 0 && message == s_uTaskbarRestart) {
+        TrayApp* tray = (TrayApp*)GetWindowLongPtr(hWnd, GWLP_USERDATA);
+        if (tray) {
+            tray->InitTrayIcon();
+        }
+        return 0;
     } else if (message == WM_DESTROY) {
         PostQuitMessage(0);
         return 0;
@@ -41,6 +49,10 @@ TrayApp::TrayApp(HINSTANCE hInstance, MainWindow* pMainWindow)
     : m_hInstance(hInstance), m_pMainWindow(pMainWindow), m_hHiddenWnd(NULL) {
     ZeroMemory(&m_nid, sizeof(m_nid));
 
+    if (s_uTaskbarRestart == 0) {
+        s_uTaskbarRestart = RegisterWindowMessageW(L"TaskbarCreated");
+    }
+
     WNDCLASSEXW wcex = {0};
     wcex.cbSize = sizeof(WNDCLASSEX);
     wcex.lpfnWndProc = HiddenWndProc;
@@ -48,7 +60,7 @@ TrayApp::TrayApp(HINSTANCE hInstance, MainWindow* pMainWindow)
     wcex.lpszClassName = L"ClearMaxTrayClass";
     RegisterClassExW(&wcex);
 
-    m_hHiddenWnd = CreateWindowExW(0, L"ClearMaxTrayClass", L"ClearMaxTray", 0, 0, 0, 0, 0, HWND_MESSAGE, NULL, hInstance, this);
+    m_hHiddenWnd = CreateWindowExW(0, L"ClearMaxTrayClass", L"ClearMaxTray", WS_POPUP, 0, 0, 0, 0, NULL, NULL, hInstance, this);
 }
 
 TrayApp::~TrayApp() {
@@ -68,7 +80,9 @@ void TrayApp::InitTrayIcon() {
     if (!m_nid.hIcon) m_nid.hIcon = LoadIcon(NULL, IDI_APPLICATION);
     lstrcpyW(m_nid.szTip, L"clearMax");
 
-    Shell_NotifyIconW(NIM_ADD, &m_nid);
+    if (!Shell_NotifyIconW(NIM_ADD, &m_nid)) {
+        Shell_NotifyIconW(NIM_MODIFY, &m_nid);
+    }
 }
 
 void TrayApp::RemoveTrayIcon() {

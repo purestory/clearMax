@@ -53,6 +53,51 @@ static void ShowExplorerContextMenu(HWND hWnd, const std::wstring& path, POINT p
     }
 }
 
+namespace {
+    bool RunCommandHidden(const std::wstring& cmd, DWORD& exitCode) {
+        STARTUPINFOW si = { sizeof(si) };
+        PROCESS_INFORMATION pi = { 0 };
+        si.dwFlags = STARTF_USESHOWWINDOW;
+        si.wShowWindow = SW_HIDE;
+
+        std::wstring cmdMutable = cmd;
+        if (CreateProcessW(NULL, &cmdMutable[0], NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, NULL, &si, &pi)) {
+            WaitForSingleObject(pi.hProcess, INFINITE);
+            GetExitCodeProcess(pi.hProcess, &exitCode);
+            CloseHandle(pi.hProcess);
+            CloseHandle(pi.hThread);
+            return true;
+        }
+        return false;
+    }
+
+    std::wstring GetAutoStartTaskName() {
+        wchar_t szUserName[256] = { 0 };
+        DWORD dwSize = 256;
+        if (GetUserNameW(szUserName, &dwSize) && szUserName[0] != L'\0') {
+            return L"clearMax_AutoStart_" + std::wstring(szUserName);
+        }
+        return L"clearMax_AutoStart";
+    }
+
+    void CleanLegacyAutoStart() {
+        // 1. 레지스트리 Run 키에 남은 clearMax 값 정리 (작업 스케줄러로 일원화)
+        HKEY hKey = NULL;
+        if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Run", 0, KEY_SET_VALUE, &hKey) == ERROR_SUCCESS) {
+            RegDeleteValueW(hKey, L"clearMax");
+            RegDeleteValueW(hKey, L"ClearMax");
+            RegCloseKey(hKey);
+        }
+
+        // 2. 레거시 단일 작업 스케줄(clearMax_AutoStart) 정리
+        std::wstring curTask = GetAutoStartTaskName();
+        if (curTask != L"clearMax_AutoStart") {
+            DWORD exitCode = 0;
+            RunCommandHidden(L"schtasks /Delete /TN \"clearMax_AutoStart\" /F", exitCode);
+        }
+    }
+}
+
 MainWindow::MainWindow(HINSTANCE hInstance) 
     : m_hInstance(hInstance), m_hWnd(NULL), m_hTabControl(NULL),
       m_hTabPrograms(NULL), m_hTabShredder(NULL), m_hTabBrowser(NULL), m_hTabRecovery(NULL), m_hTabSettings(NULL) {
@@ -68,6 +113,7 @@ MainWindow::~MainWindow() {
 }
 
 bool MainWindow::Initialize() {
+    CleanLegacyAutoStart();
     m_hWnd = CreateDialogParamW(m_hInstance, MAKEINTRESOURCEW(IDD_MAIN_DIALOG), NULL, MainDlgProc, (LPARAM)this);
     if (!m_hWnd) return false;
     return true;
@@ -947,20 +993,22 @@ INT_PTR MainWindow::HandleBrowserMessage(HWND hWnd, UINT message, WPARAM wParam,
         bool cleanPrefetch = (IsDlgButtonChecked(hWnd, IDC_CHK_SYS_PREFETCH) == BST_CHECKED);
         bool cleanRecycle = (IsDlgButtonChecked(hWnd, IDC_CHK_SYS_RECYCLEBIN) == BST_CHECKED);
         bool cleanLogs = (IsDlgButtonChecked(hWnd, IDC_CHK_SYS_LOGS) == BST_CHECKED);
+        bool cleanStartup = (IsDlgButtonChecked(hWnd, IDC_CHK_SYS_STARTUP) == BST_CHECKED);
 
-        if (browsers.empty() && dataTypes.empty() && !cleanTemp && !cleanPrefetch && !cleanRecycle && !cleanLogs) {
+        if (browsers.empty() && dataTypes.empty() && !cleanTemp && !cleanPrefetch && !cleanRecycle && !cleanLogs && !cleanStartup) {
             MessageBoxW(hWnd, L"최소 하나 이상의 최적화 항목을 선택해주세요.", L"알림", MB_OK | MB_ICONWARNING);
             return (INT_PTR)TRUE;
         }
 
         EnableWindow(GetDlgItem(hWnd, IDC_BTN_CLEAN_ALL), FALSE);
         
-        std::thread([this, hWnd, browsers, dataTypes, cleanTemp, cleanPrefetch, cleanRecycle, cleanLogs]() {
+        std::thread([this, hWnd, browsers, dataTypes, cleanTemp, cleanPrefetch, cleanRecycle, cleanLogs, cleanStartup]() {
             int taskCount = browsers.size();
             if (cleanTemp) taskCount++;
             if (cleanPrefetch) taskCount++;
             if (cleanRecycle) taskCount++;
             if (cleanLogs) taskCount++;
+            if (cleanStartup) taskCount++;
             
             if (taskCount == 0) return;
             
@@ -991,11 +1039,24 @@ INT_PTR MainWindow::HandleBrowserMessage(HWND hWnd, UINT message, WPARAM wParam,
                 SystemCleaner::cleanSystemLogs(ShredPass::Pass_1, updateProgress);
                 currentTask++;
             }
+            int cleanedStartupCount = 0;
+            if (cleanStartup) {
+                cleanedStartupCount = StartupMgr::cleanInvalidStartupItems(updateProgress);
+                currentTask++;
+            }
 
             SendDlgItemMessage(hWnd, IDC_PROG_BROWSER, PBM_SETPOS, 100, 0);
-            MessageBoxW(hWnd, L"최적화 작업이 완료되었습니다.", L"알림", MB_OK | MB_ICONINFORMATION);
+            std::wstring doneMsg = L"최적화 작업이 완료되었습니다.";
+            if (cleanStartup) {
+                doneMsg += L"\n(유효하지 않은 시작프로그램 " + std::to_wstring(cleanedStartupCount) + L"개 정리 완료)";
+            }
+            MessageBoxW(hWnd, doneMsg.c_str(), L"알림", MB_OK | MB_ICONINFORMATION);
             EnableWindow(GetDlgItem(hWnd, IDC_BTN_CLEAN_ALL), TRUE);
             SendDlgItemMessage(hWnd, IDC_PROG_BROWSER, PBM_SETPOS, 0, 0);
+
+            if (cleanStartup && m_hTabStartup) {
+                PostMessageW(m_hTabStartup, WM_COMMAND, MAKEWPARAM(IDC_BTN_STARTUP_REFRESH, 0), 0);
+            }
         }).detach();
     }
     return (INT_PTR)FALSE;
@@ -1474,50 +1535,35 @@ INT_PTR CALLBACK MainWindow::ConfigDlgProc(HWND hWnd, UINT message, WPARAM wPara
     return (INT_PTR)FALSE;
 }
 
-namespace {
-    bool RunCommandHidden(const std::wstring& cmd, DWORD& exitCode) {
-        STARTUPINFOW si = { sizeof(si) };
-        PROCESS_INFORMATION pi = { 0 };
-        si.dwFlags = STARTF_USESHOWWINDOW;
-        si.wShowWindow = SW_HIDE;
-
-        std::wstring cmdMutable = cmd;
-        if (CreateProcessW(NULL, &cmdMutable[0], NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, NULL, &si, &pi)) {
-            WaitForSingleObject(pi.hProcess, INFINITE);
-            GetExitCodeProcess(pi.hProcess, &exitCode);
-            CloseHandle(pi.hProcess);
-            CloseHandle(pi.hThread);
-            return true;
-        }
-        return false;
-    }
-}
-
 bool MainWindow::IsAutoStartEnabled() {
-    std::wstring cmd = L"schtasks /Query /TN \"clearMax_AutoStart\"";
+    std::wstring taskName = GetAutoStartTaskName();
+    std::wstring cmd = L"schtasks /Query /TN \"" + taskName + L"\"";
     DWORD exitCode = 0;
-    if (RunCommandHidden(cmd, exitCode)) {
-        return exitCode == 0;
+    if (RunCommandHidden(cmd, exitCode) && exitCode == 0) {
+        return true;
+    }
+    // 마이그레이션 전 레거시 작업 확인
+    if (RunCommandHidden(L"schtasks /Query /TN \"clearMax_AutoStart\"", exitCode) && exitCode == 0) {
+        return true;
     }
     return false;
 }
 
 void MainWindow::ToggleAutoStart(bool enable) {
+    CleanLegacyAutoStart();
+    std::wstring taskName = GetAutoStartTaskName();
+
     if (!enable) {
-        if (IsAutoStartEnabled()) {
-            std::wstring cmd = L"schtasks /Delete /TN \"clearMax_AutoStart\" /F";
-            DWORD exitCode = 0;
-            RunCommandHidden(cmd, exitCode);
-        }
+        std::wstring cmd = L"schtasks /Delete /TN \"" + taskName + L"\" /F";
+        DWORD exitCode = 0;
+        RunCommandHidden(cmd, exitCode);
     } else {
-        if (!IsAutoStartEnabled()) {
-            wchar_t path[MAX_PATH];
-            GetModuleFileNameW(NULL, path, MAX_PATH);
-            std::wstring exePath = path;
-            std::wstring cmd = L"schtasks /Create /TN \"clearMax_AutoStart\" /TR \"\\\"" + exePath + L"\\\" /autostart\" /SC ONLOGON /RL HIGHEST /F";
-            DWORD exitCode = 0;
-            RunCommandHidden(cmd, exitCode);
-        }
+        wchar_t path[MAX_PATH];
+        GetModuleFileNameW(NULL, path, MAX_PATH);
+        std::wstring exePath = path;
+        std::wstring cmd = L"schtasks /Create /TN \"" + taskName + L"\" /TR \"\\\"" + exePath + L"\\\" /autostart\" /SC ONLOGON /RL HIGHEST /F";
+        DWORD exitCode = 0;
+        RunCommandHidden(cmd, exitCode);
     }
 }
 
@@ -1600,6 +1646,7 @@ INT_PTR CALLBACK MainWindow::StartupDlgProc(HWND hWnd, UINT message, WPARAM wPar
         ComboBox_AddString(hCombo, L"레지스트리");
         ComboBox_AddString(hCombo, L"시작 폴더");
         ComboBox_AddString(hCombo, L"예약 작업");
+        ComboBox_AddString(hCombo, L"파일 없음 (유효하지 않음)");
         ComboBox_SetCurSel(hCombo, 0);
 
         pThis->PopulateStartupList(hList);
@@ -1778,6 +1825,7 @@ void MainWindow::FilterStartupList(HWND hList, int filterType) {
         if (filterType == 1 && (item.isFolderShortcut || item.isScheduledTask)) continue;
         if (filterType == 2 && !item.isFolderShortcut) continue;
         if (filterType == 3 && !item.isScheduledTask) continue;
+        if (filterType == 4 && !item.isFileMissing) continue;
 
         LVITEMW lvi = { 0 };
         lvi.mask = LVIF_TEXT | LVIF_PARAM | LVIF_IMAGE;
@@ -1790,7 +1838,12 @@ void MainWindow::FilterStartupList(HWND hList, int filterType) {
         int row = ListView_InsertItem(hList, &lvi);
         
         ListView_SetItemText(hList, row, 1, (LPWSTR)item.location.c_str());
-        ListView_SetItemText(hList, row, 2, (LPWSTR)(item.isEnabled ? L"사용" : L"사용 안 함"));
+
+        std::wstring statusStr = item.isEnabled ? L"사용" : L"사용 안 함";
+        if (item.isFileMissing) {
+            statusStr += L" (파일 없음)";
+        }
+        ListView_SetItemText(hList, row, 2, (LPWSTR)statusStr.c_str());
         ListView_SetItemText(hList, row, 3, (LPWSTR)item.command.c_str());
     }
 

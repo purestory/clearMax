@@ -35,6 +35,7 @@ private:
     // Helper to get self path
     std::wstring GetExePath();
     
+    static UINT s_uTaskbarRestart;
     static LRESULT CALLBACK HiddenWndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam);
     static INT_PTR CALLBACK QuickDeleteDlgProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam);
 };

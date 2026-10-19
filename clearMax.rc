@@ -56,24 +56,25 @@ IDD_TAB_BROWSER DIALOGEX 0, 0, 380, 270
 STYLE DS_SETFONT | DS_FIXEDSYS | WS_CHILD
 FONT 9, "맑은 고딕", 400, 0, 0x1
 BEGIN
-    GROUPBOX        "브라우저 선택", IDC_STATIC, 10, 10, 100, 80
+    GROUPBOX        "브라우저 선택", IDC_STATIC, 10, 10, 100, 100
     AUTOCHECKBOX    "Chrome (크롬)", IDC_CHK_CHROME, 20, 25, 80, 10
     AUTOCHECKBOX    "Edge (엣지)", IDC_CHK_EDGE, 20, 40, 80, 10
     AUTOCHECKBOX    "Firefox (파이어폭스)", IDC_CHK_FIREFOX, 20, 55, 80, 10
     
-    GROUPBOX        "브라우저 정리 항목", IDC_STATIC, 120, 10, 120, 80
+    GROUPBOX        "브라우저 정리 항목", IDC_STATIC, 120, 10, 120, 100
     AUTOCHECKBOX    "방문 기록 (History)", IDC_CHK_HISTORY, 130, 25, 80, 10
     AUTOCHECKBOX    "캐시 (Cache)", IDC_CHK_CACHE, 130, 40, 80, 10
     AUTOCHECKBOX    "쿠키 (Cookies)", IDC_CHK_COOKIES, 130, 55, 80, 10
     AUTOCHECKBOX    "다운로드 기록", IDC_CHK_DOWNLOADS, 130, 70, 80, 10
     
-    GROUPBOX        "Windows 시스템 정리", IDC_STATIC, 250, 10, 120, 80
+    GROUPBOX        "Windows 시스템 정리", IDC_STATIC, 250, 10, 120, 100
     AUTOCHECKBOX    "임시 파일 (Temp)", IDC_CHK_SYS_TEMP, 260, 25, 100, 10
     AUTOCHECKBOX    "프리페치 (Prefetch)", IDC_CHK_SYS_PREFETCH, 260, 40, 100, 10
     AUTOCHECKBOX    "휴지통 비우기", IDC_CHK_SYS_RECYCLEBIN, 260, 55, 100, 10
     AUTOCHECKBOX    "시스템 로그 파일", IDC_CHK_SYS_LOGS, 260, 70, 100, 10
+    AUTOCHECKBOX    "시작프로그램 (파일 없음)", IDC_CHK_SYS_STARTUP, 260, 85, 105, 10
 
-    PUSHBUTTON      "정리 시작", IDC_BTN_CLEAN_ALL, 10, 100, 120, 20
+    PUSHBUTTON      "정리 시작", IDC_BTN_CLEAN_ALL, 10, 118, 120, 20
     CONTROL         "", IDC_PROG_BROWSER, "msctls_progress32", WS_BORDER, 10, 250, 360, 15
 END
 

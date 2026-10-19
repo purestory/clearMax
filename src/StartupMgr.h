@@ -2,6 +2,7 @@
 #include <string>
 #include <vector>
 #include <windows.h>
+#include <functional>
 
 struct StartupItem {
     std::wstring name;
@@ -20,6 +21,7 @@ struct StartupItem {
     std::wstring taskPath;
     
     int iconIndex = -1;
+    bool isFileMissing = false;
 };
 
 class StartupMgr {
@@ -27,4 +29,9 @@ public:
     static std::vector<StartupItem> getStartupItems();
     static bool setStartupItemState(StartupItem& item, bool enable);
     static bool deleteStartupItem(const StartupItem& item);
+
+    // Validation & Cleanup for orphan startup items (missing targets)
+    static bool isItemValid(const StartupItem& item);
+    static std::vector<StartupItem> getInvalidStartupItems();
+    static int cleanInvalidStartupItems(std::function<void(int)> progressCallback = nullptr);
 };

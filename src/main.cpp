@@ -47,6 +47,14 @@ static void ForceForeground(HWND hWnd) {
 }
 
 int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpCmdLine, int nCmdShow) {
+    // Prevent running in background sessions (e.g., from other users' Scheduled Tasks)
+    DWORD dwConsoleSessionId = WTSGetActiveConsoleSessionId();
+    DWORD dwCurrentSessionId = 0;
+    ProcessIdToSessionId(GetCurrentProcessId(), &dwCurrentSessionId);
+    if (dwConsoleSessionId != 0xFFFFFFFF && dwCurrentSessionId != dwConsoleSessionId) {
+        return 0; // Exit silently
+    }
+
     bool autoShred = false;
     std::wstring shredPath = L"";
     bool autoAnalyze = false;
@@ -69,7 +77,7 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpCmd
         LocalFree(argv);
     }
 
-    HANDLE hMutex = CreateMutexW(NULL, TRUE, L"Global\\ClearMax_SingleInstanceMutex");
+    HANDLE hMutex = CreateMutexW(NULL, TRUE, L"Local\\ClearMax_SingleInstanceMutex");
     if (GetLastError() == ERROR_ALREADY_EXISTS) {
         HWND hExisting = FindWindowW(L"#32770", L"clearMax");
         if (hExisting) {

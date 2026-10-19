@@ -1,8 +1,12 @@
 #include "StartupMgr.h"
 #include <Shlwapi.h>
 #include <Shlobj.h>
+#include <shobjidl.h>
 #include <filesystem>
 #include <taskschd.h>
+#include <sstream>
+#include <algorithm>
+#include <cctype>
 
 #pragma comment(lib, "taskschd.lib")
 
@@ -266,6 +270,11 @@ std::vector<StartupItem> StartupMgr::getStartupItems() {
     // Scheduled Tasks
     ScanScheduledTasks(items);
 
+    // Validate item files existence
+    for (auto& item : items) {
+        item.isFileMissing = !isItemValid(item);
+    }
+
     return items;
 }
 
@@ -414,3 +423,194 @@ bool StartupMgr::deleteStartupItem(const StartupItem& item) {
     }
     return false;
 }
+
+static std::wstring ResolveShortcutTarget(const std::wstring& lnkPath) {
+    std::wstring targetPath = L"";
+    HRESULT hrCo = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
+    bool coInit = SUCCEEDED(hrCo);
+
+    IShellLinkW* psl = NULL;
+    HRESULT hr = CoCreateInstance(CLSID_ShellLink, NULL, CLSCTX_INPROC_SERVER, IID_IShellLinkW, (void**)&psl);
+    if (SUCCEEDED(hr)) {
+        IPersistFile* ppf = NULL;
+        hr = psl->QueryInterface(IID_IPersistFile, (void**)&ppf);
+        if (SUCCEEDED(hr)) {
+            hr = ppf->Load(lnkPath.c_str(), STGM_READ);
+            if (SUCCEEDED(hr)) {
+                wchar_t szGotPath[MAX_PATH] = { 0 };
+                WIN32_FIND_DATAW wfd;
+                hr = psl->GetPath(szGotPath, MAX_PATH, &wfd, SLGP_UNCPRIORITY);
+                if (SUCCEEDED(hr)) {
+                    targetPath = szGotPath;
+                }
+            }
+            ppf->Release();
+        }
+        psl->Release();
+    }
+    if (coInit) CoUninitialize();
+    return targetPath;
+}
+
+static bool CheckFileExistsHelper(const std::wstring& rawCommand) {
+    if (rawCommand.empty()) return false;
+
+    // 1. 환경 변수 확장
+    wchar_t expanded[MAX_PATH * 4] = { 0 };
+    DWORD expLen = ExpandEnvironmentStringsW(rawCommand.c_str(), expanded, ARRAYSIZE(expanded));
+    std::wstring cmd = (expLen > 0) ? expanded : rawCommand;
+
+    // 앞뒤 공백 제거
+    while (!cmd.empty() && iswspace(cmd.front())) cmd.erase(cmd.begin());
+    while (!cmd.empty() && iswspace(cmd.back())) cmd.pop_back();
+    if (cmd.empty()) return false;
+
+    // 2. rundll32.exe 호출 처리
+    std::wstring cmdLower = cmd;
+    std::transform(cmdLower.begin(), cmdLower.end(), cmdLower.begin(), ::towlower);
+    if (cmdLower.rfind(L"rundll32", 0) == 0) {
+        size_t firstSpace = cmd.find(L' ');
+        if (firstSpace != std::wstring::npos) {
+            std::wstring args = cmd.substr(firstSpace + 1);
+            while (!args.empty() && iswspace(args.front())) args.erase(args.begin());
+
+            std::wstring dllPath = L"";
+            if (!args.empty() && args.front() == L'\"') {
+                size_t closeQ = args.find(L'\"', 1);
+                if (closeQ != std::wstring::npos) {
+                    dllPath = args.substr(1, closeQ - 1);
+                }
+            } else {
+                size_t comma = args.find(L',');
+                size_t space = args.find(L' ');
+                size_t endPos = (comma != std::wstring::npos) ? comma : space;
+                if (endPos != std::wstring::npos) {
+                    dllPath = args.substr(0, endPos);
+                } else {
+                    dllPath = args;
+                }
+            }
+
+            if (!dllPath.empty()) {
+                wchar_t dllExp[MAX_PATH * 2] = { 0 };
+                ExpandEnvironmentStringsW(dllPath.c_str(), dllExp, ARRAYSIZE(dllExp));
+                if (fs::exists(dllExp) && !fs::is_directory(dllExp)) {
+                    return true;
+                }
+                wchar_t found[MAX_PATH] = { 0 };
+                if (SearchPathW(NULL, dllExp, L".dll", MAX_PATH, found, NULL) > 0) {
+                    return true;
+                }
+                return false;
+            }
+        }
+    }
+
+    // 3. 따옴표로 감싸진 경로
+    if (cmd.front() == L'\"') {
+        size_t closeQuote = cmd.find(L'\"', 1);
+        if (closeQuote != std::wstring::npos) {
+            std::wstring exePath = cmd.substr(1, closeQuote - 1);
+            if (fs::exists(exePath) && !fs::is_directory(exePath)) {
+                return true;
+            }
+            wchar_t found[MAX_PATH] = { 0 };
+            if (SearchPathW(NULL, exePath.c_str(), NULL, MAX_PATH, found, NULL) > 0) {
+                return true;
+            }
+            return false;
+        }
+    }
+
+    // 4. 따옴표 없는 경로 (공백 포함 경로 탐색)
+    std::wstring candidate = L"";
+    std::wistringstream iss(cmd);
+    std::wstring token;
+    while (iss >> token) {
+        if (!candidate.empty()) candidate += L" ";
+        candidate += token;
+
+        if (fs::exists(candidate) && !fs::is_directory(candidate)) {
+            return true;
+        }
+    }
+
+    // 5. 첫 번째 토큰만으로 SearchPath 검색 (시스템 유틸리티 등)
+    size_t firstSpace = cmd.find(L' ');
+    std::wstring firstToken = (firstSpace != std::wstring::npos) ? cmd.substr(0, firstSpace) : cmd;
+    wchar_t found[MAX_PATH] = { 0 };
+    if (SearchPathW(NULL, firstToken.c_str(), L".exe", MAX_PATH, found, NULL) > 0) {
+        return true;
+    }
+
+    return false;
+}
+
+bool StartupMgr::isItemValid(const StartupItem& item) {
+    // 1. 단축아이콘(.lnk)인 경우
+    if (item.isFolderShortcut) {
+        if (!fs::exists(item.shortcutPath)) {
+            return false;
+        }
+        std::wstring ext = fs::path(item.shortcutPath).extension().wstring();
+        std::transform(ext.begin(), ext.end(), ext.begin(), ::towlower);
+        if (ext == L".lnk") {
+            std::wstring targetPath = ResolveShortcutTarget(item.shortcutPath);
+            if (!targetPath.empty()) {
+                if (targetPath.find(L":\\") != std::wstring::npos || targetPath.rfind(L"\\\\", 0) == 0) {
+                    wchar_t expanded[MAX_PATH * 2] = { 0 };
+                    ExpandEnvironmentStringsW(targetPath.c_str(), expanded, ARRAYSIZE(expanded));
+                    return fs::exists(expanded);
+                }
+            }
+        }
+        return true;
+    }
+
+    // 2. 예약 작업 (Task Scheduler)
+    if (item.isScheduledTask) {
+        // Microsoft Windows 내장 기본 작업은 안전을 위해 유효한 것으로 간주(보호)
+        if (item.taskPath.rfind(L"\\Microsoft\\Windows\\", 0) == 0 ||
+            item.taskPath.rfind(L"\\Microsoft\\", 0) == 0) {
+            return true;
+        }
+        if (item.command.empty()) return false;
+        return CheckFileExistsHelper(item.command);
+    }
+
+    // 3. 레지스트리 항목
+    if (item.command.empty()) return false;
+    return CheckFileExistsHelper(item.command);
+}
+
+std::vector<StartupItem> StartupMgr::getInvalidStartupItems() {
+    auto allItems = getStartupItems();
+    std::vector<StartupItem> invalidItems;
+    for (const auto& item : allItems) {
+        if (!isItemValid(item)) {
+            invalidItems.push_back(item);
+        }
+    }
+    return invalidItems;
+}
+
+int StartupMgr::cleanInvalidStartupItems(std::function<void(int)> progressCallback) {
+    auto invalidItems = getInvalidStartupItems();
+    int cleanedCount = 0;
+    size_t total = invalidItems.size();
+    if (total == 0) {
+        if (progressCallback) progressCallback(100);
+        return 0;
+    }
+
+    for (size_t i = 0; i < total; ++i) {
+        if (deleteStartupItem(invalidItems[i])) {
+            cleanedCount++;
+        }
+        if (progressCallback) {
+            progressCallback((int)((i + 1) * 100 / total));
+        }
+    }
+    return cleanedCount;
+}
+
