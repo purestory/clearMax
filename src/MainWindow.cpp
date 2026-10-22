@@ -415,13 +415,48 @@ INT_PTR MainWindow::HandleProgramsMessage(HWND hWnd, UINT message, WPARAM wParam
                     } else if (wmId == IDC_BTN_FORCE_REMOVE) {
                         if (MessageBoxW(hWnd, L"정말로 이 항목을 레지스트리 및 디스크에서 강제로 삭제하시겠습니까?", L"경고", MB_YESNO | MB_ICONWARNING) == IDYES) {
                             bool rebootRequired = false;
-                            if (RegistryMgr::forceRemoveProgram(info, rebootRequired)) {
-                                if (rebootRequired) {
-                                    MessageBoxW(hWnd, L"일부 파일은 사용 중이어서 삭제되지 않았습니다. 다음 재부팅 시 삭제됩니다.", L"알림", MB_OK);
+                            bool needSafeMode = false;
+                            std::wstring resolvedPath;
+                            std::vector<std::wstring> services;
+
+                            if (RegistryMgr::forceRemoveProgram(info, rebootRequired, needSafeMode, resolvedPath, services)) {
+                                if (needSafeMode && !resolvedPath.empty()) {
+                                    int ret = MessageBoxW(hWnd,
+                                        L"해당 프로그램의 백그라운드 서비스 또는 보안 드라이버가 시스템을 점유하고 있어 일반 삭제가 차단되었습니다.\n\n"
+                                        L"[초강력 1회성 안전모드 자동 삭제]를 진행하시겠습니까?\n\n"
+                                        L"• PC가 1회 안전모드로 자동 부팅하여 대상을 완전 소멸시킵니다.\n"
+                                        L"• 소멸 즉시 자동으로 정상 모드로 재부팅되어 원래 화면으로 돌아옵니다.",
+                                        L"보안 잠금 감지 - 안전모드 자동 삭제 권장", MB_YESNO | MB_ICONQUESTION);
+
+                                    if (ret == IDYES) {
+                                        if (RegistryMgr::scheduleSafeModePurge(resolvedPath, services)) {
+                                            if (MessageBoxW(hWnd,
+                                                L"안전모드 자동 삭제가 예약되었습니다.\n지금 즉시 재부팅하시겠습니까?\n\n(작업 중인 모든 문서를 저장해 주세요.)",
+                                                L"재부팅 확인", MB_YESNO | MB_ICONWARNING) == IDYES) {
+
+                                                SHELLEXECUTEINFOW sei = { sizeof(sei) };
+                                                sei.lpVerb = L"runas";
+                                                sei.lpFile = L"shutdown.exe";
+                                                sei.lpParameters = L"/r /t 0 /f";
+                                                sei.nShow = SW_HIDE;
+                                                ShellExecuteExW(&sei);
+                                            }
+                                        } else {
+                                            MessageBoxW(hWnd, L"안전모드 부팅 예약에 실패했습니다.", L"오류", MB_OK | MB_ICONERROR);
+                                        }
+                                    } else if (rebootRequired) {
+                                        MessageBoxW(hWnd, L"일부 잠긴 파일은 시스템 부팅 전 삭제로 예약되었습니다.\n다음 재부팅 시 삭제됩니다.", L"알림", MB_OK);
+                                    }
+                                } else if (rebootRequired) {
+                                    MessageBoxW(hWnd, L"일부 잠긴 파일은 시스템 부팅 전 삭제로 예약되었습니다.\n다음 재부팅 시 완전히 삭제됩니다.", L"알림", MB_OK);
                                 } else {
-                                    MessageBoxW(hWnd, L"삭제되었습니다.", L"알림", MB_OK);
+                                    MessageBoxW(hWnd, L"프로그램 및 관련 파일이 완전히 삭제되었습니다.", L"알림", MB_OK);
                                 }
                                 PopulateProgramsList(hList);
+                                if (m_hTabStartup) {
+                                    HWND hStartupList = GetDlgItem(m_hTabStartup, IDC_LIST_STARTUP);
+                                    if (hStartupList) PopulateStartupList(hStartupList);
+                                }
                             } else {
                                 MessageBoxW(hWnd, L"삭제 실패.", L"오류", MB_OK | MB_ICONERROR);
                             }

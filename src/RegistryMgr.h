@@ -27,7 +27,12 @@ public:
     static bool uninstallProgram(const ProgramInfo& info, std::function<void()> onFinished = nullptr);
     
     // Force remove registry key and attempt to shred remaining files in install location
+    static bool forceRemoveProgram(const ProgramInfo& info, bool& rebootRequired, bool& needSafeMode, std::wstring& outResolvedPath, std::vector<std::wstring>& outServices);
     static bool forceRemoveProgram(const ProgramInfo& info, bool& rebootRequired);
+
+    // Schedule 1-shot Safe Mode purge and auto-reboot to normal mode
+    static bool scheduleSafeModePurge(const std::wstring& targetDir, const std::vector<std::wstring>& serviceNames);
+    static int RunSafePurgeService();
 
     static std::wstring fetchLastUsedDate(const std::wstring& installLocation, const std::wstring& uninstallString);
 

@@ -3,6 +3,7 @@
 #include <commctrl.h>
 #include "TrayApp.h"
 #include "MainWindow.h"
+#include "RegistryMgr.h"
 
 // Enable Windows Visual Styles (Modern Theme)
 #pragma comment(linker, "\"/manifestdependency:type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'\"")
@@ -47,11 +48,23 @@ static void ForceForeground(HWND hWnd) {
 }
 
 int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpCmdLine, int nCmdShow) {
+    int argc = 0;
+    LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+    if (argv) {
+        for (int i = 1; i < argc; ++i) {
+            if (_wcsicmp(argv[i], L"/safepurge_service") == 0) {
+                LocalFree(argv);
+                return RegistryMgr::RunSafePurgeService();
+            }
+        }
+    }
+
     // Prevent running in background sessions (e.g., from other users' Scheduled Tasks)
     DWORD dwConsoleSessionId = WTSGetActiveConsoleSessionId();
     DWORD dwCurrentSessionId = 0;
     ProcessIdToSessionId(GetCurrentProcessId(), &dwCurrentSessionId);
     if (dwConsoleSessionId != 0xFFFFFFFF && dwCurrentSessionId != dwConsoleSessionId) {
+        if (argv) LocalFree(argv);
         return 0; // Exit silently
     }
 
@@ -60,8 +73,6 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpCmd
     bool autoAnalyze = false;
     std::wstring analyzePath = L"";
     
-    int argc = 0;
-    LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
     if (argv) {
         for (int i = 1; i < argc; ++i) {
             if (_wcsicmp(argv[i], L"/shred") == 0 && i + 1 < argc) {

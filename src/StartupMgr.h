@@ -34,4 +34,5 @@ public:
     static bool isItemValid(const StartupItem& item);
     static std::vector<StartupItem> getInvalidStartupItems();
     static int cleanInvalidStartupItems(std::function<void(int)> progressCallback = nullptr);
+    static int removeStartupItemsForProgram(const std::wstring& installDir, const std::wstring& displayName = L"");
 };

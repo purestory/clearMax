@@ -614,3 +614,68 @@ int StartupMgr::cleanInvalidStartupItems(std::function<void(int)> progressCallba
     return cleanedCount;
 }
 
+int StartupMgr::removeStartupItemsForProgram(const std::wstring& installDir, const std::wstring& displayName) {
+    auto allItems = getStartupItems();
+    int removedCount = 0;
+
+    std::wstring lowerDir = installDir;
+    std::transform(lowerDir.begin(), lowerDir.end(), lowerDir.begin(), ::towlower);
+    while (!lowerDir.empty() && (lowerDir.back() == L'\\' || lowerDir.back() == L'/')) {
+        lowerDir.pop_back();
+    }
+
+    std::wstring lowerName = displayName;
+    std::transform(lowerName.begin(), lowerName.end(), lowerName.begin(), ::towlower);
+
+    for (const auto& item : allItems) {
+        bool match = false;
+
+        // 1. 커맨드라인 경로 매칭
+        if (!lowerDir.empty()) {
+            std::wstring lowerCmd = item.command;
+            std::transform(lowerCmd.begin(), lowerCmd.end(), lowerCmd.begin(), ::towlower);
+            if (lowerCmd.find(lowerDir) != std::wstring::npos) {
+                match = true;
+            }
+        }
+
+        // 2. 단축아이콘(.lnk)인 경우 실제 타깃 경로 매칭
+        if (!match && item.isFolderShortcut && !lowerDir.empty()) {
+            std::wstring target = ResolveShortcutTarget(item.shortcutPath);
+            std::transform(target.begin(), target.end(), target.begin(), ::towlower);
+            if (target.find(lowerDir) != std::wstring::npos) {
+                match = true;
+            }
+        }
+
+        // 3. 프로그램 이름(DisplayName)과의 매칭 (3글자 이상)
+        if (!match && lowerName.length() >= 3) {
+            std::wstring lowerItemName = item.name;
+            std::transform(lowerItemName.begin(), lowerItemName.end(), lowerItemName.begin(), ::towlower);
+            if (lowerItemName.find(lowerName) != std::wstring::npos || lowerName.find(lowerItemName) != std::wstring::npos) {
+                // Windows 핵심 예약 작업 보호
+                if (!item.isScheduledTask || 
+                    (item.taskPath.rfind(L"\\Microsoft\\Windows\\", 0) != 0 && item.taskPath.rfind(L"\\Microsoft\\", 0) != 0)) {
+                    match = true;
+                }
+            }
+        }
+
+        // 4. 소멸된 유령 시작프로그램 추가 검증
+        if (!match && !lowerDir.empty() && !isItemValid(item)) {
+            std::wstring lowerCmd = item.command;
+            std::transform(lowerCmd.begin(), lowerCmd.end(), lowerCmd.begin(), ::towlower);
+            if (lowerCmd.find(lowerDir) != std::wstring::npos) {
+                match = true;
+            }
+        }
+
+        if (match) {
+            if (deleteStartupItem(item)) {
+                removedCount++;
+            }
+        }
+    }
+
+    return removedCount;
+}
