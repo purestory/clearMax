@@ -424,7 +424,7 @@ bool StartupMgr::deleteStartupItem(const StartupItem& item) {
     return false;
 }
 
-static std::wstring ResolveShortcutTarget(const std::wstring& lnkPath) {
+std::wstring StartupMgr::resolveShortcutTarget(const std::wstring& lnkPath) {
     std::wstring targetPath = L"";
     HRESULT hrCo = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
     bool coInit = SUCCEEDED(hrCo);
@@ -555,7 +555,7 @@ bool StartupMgr::isItemValid(const StartupItem& item) {
         std::wstring ext = fs::path(item.shortcutPath).extension().wstring();
         std::transform(ext.begin(), ext.end(), ext.begin(), ::towlower);
         if (ext == L".lnk") {
-            std::wstring targetPath = ResolveShortcutTarget(item.shortcutPath);
+            std::wstring targetPath = resolveShortcutTarget(item.shortcutPath);
             if (!targetPath.empty()) {
                 if (targetPath.find(L":\\") != std::wstring::npos || targetPath.rfind(L"\\\\", 0) == 0) {
                     wchar_t expanded[MAX_PATH * 2] = { 0 };
@@ -641,7 +641,7 @@ int StartupMgr::removeStartupItemsForProgram(const std::wstring& installDir, con
 
         // 2. 단축아이콘(.lnk)인 경우 실제 타깃 경로 매칭
         if (!match && item.isFolderShortcut && !lowerDir.empty()) {
-            std::wstring target = ResolveShortcutTarget(item.shortcutPath);
+            std::wstring target = resolveShortcutTarget(item.shortcutPath);
             std::transform(target.begin(), target.end(), target.begin(), ::towlower);
             if (target.find(lowerDir) != std::wstring::npos) {
                 match = true;

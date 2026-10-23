@@ -30,6 +30,9 @@ public:
     static bool setStartupItemState(StartupItem& item, bool enable);
     static bool deleteStartupItem(const StartupItem& item);
 
+    // Shortcut resolving utility
+    static std::wstring resolveShortcutTarget(const std::wstring& lnkPath);
+
     // Validation & Cleanup for orphan startup items (missing targets)
     static bool isItemValid(const StartupItem& item);
     static std::vector<StartupItem> getInvalidStartupItems();

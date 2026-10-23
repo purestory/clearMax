@@ -9,6 +9,8 @@ out/
 # Portable packaging
 clearMax_Portable/
 *.zip
+*_Setup.exe
+ClearMax_Setup.exe
 
 # OS generated files
 .DS_Store

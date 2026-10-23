@@ -88,6 +88,10 @@ AI 에이전트(당신)가 개발 중 **실제로 저질렀던 치명적인 실�
 - **실제 실수**: `std::wofstream`을 기본 로케일 상태에서 사용하여 스크립트 작성 중 한글 주석(`:: 1. 안전모드...`)이 들어가는 순간 유니코드 변환 에러(`failbit`)가 발생하여 파일 쓰기가 36바이트에서 중단됨. 결과적으로 핵심 복구 명령어(`bcdedit /deletevalue ...`)와 자동 재부팅 명령어(`shutdown /r`)가 스크립트에서 완전히 누락되어 사용자의 PC가 안전모드 무한 루프에 갇히는 치명적인 참사를 유발함.
 - **방지 원칙**: 스크립트/배치 파일이나 설정 파일 생성 시 `std::wofstream`을 절대 쓰지 말 것. 반드시 명시적인 UTF-8 변환(`WideCharToMultiByte(CP_UTF8, ...)` 또는 `toUtf8` 람다)을 거쳐 `std::ofstream` + 바이너리(`ios::binary`)로 출력하거나, 배치 파일 주석 및 명령어는 100% 영문 ASCII로만 작성하여 인코딩 오류 가능성을 0%로 차단할 것.
 
+### ⚠️ Windows 헤더 min/max 매크로와 C++ <algorithm> 템플릿 충돌 (error C2275)
+- **실제 실수**: `(std::min)<size_t>(...)`를 호출했을 때, `windows.h`가 기본 정의한 `#define min(a,b)` 매크로와 충돌하여 MSVC에서 `error C2275: 'size_t': 형식 대신 식이 필요합니다` 에러가 발생하며 컴파일이 중단됨.
+- **방지 원칙**: Windows 헤더가 포함된 C++ 소스 파일에서는 단순 삼항 연산자 `(a < b ? a : b)`를 사용하거나 전처리기 상단에 `#define NOMINMAX`를 지정하여 매크로 오염을 사전에 방지할 것.
+
 ---
 
 # 2. 시스템 최적화 및 clearMax 프로젝트 특화 실수 방지 (Project-Specific Traps)
@@ -123,6 +127,13 @@ AI 에이전트(당신)가 개발 중 **실제로 저질렀던 치명적인 실�
 ### 🚀 강제 삭제 시 시작프로그램(Run, 바로가기, 작업 스케줄러) 전수 연동 영구 제거
 - 프로그램 강제 삭제(`forceRemoveProgram`) 시 바이너리 파일과 서비스만 지우면 레지스트리 `HKLM/HKCU Run`, 시작프로그램 폴더 바로가기(`.lnk`), 작업 스케줄러(`schtasks`)에 등록된 시작 항목이 유령(Orphan)으로 남아 부팅 오류나 백그라운드 찌꺼기를 유발함.
 - 따라서 프로그램 경로 식별 즉시 `StartupMgr::removeStartupItemsForProgram`을 호출하여 3종 시작 항목을 동시 소멸시키고, 안전모드 숙청 서비스 및 UI 갱신 단계에서 `cleanInvalidStartupItems()`를 연쇄 실행하여 유령 시작 항목을 100% 박멸할 것.
+
+### 🖼️ 응용프로그램 및 시작프로그램 아이콘 다단계 Fallback 추출 파이프라인
+- **실제 문제**: 레지스트리 `DisplayIcon` 키는 전체 따옴표(`"path,0"`), 음수 리소스 ID, 환경변수(`%ProgramFiles%`) 등 형식이 매우 다양하며, 오픈소스 및 다수 프로그램들이 `DisplayIcon` 키를 아예 작성하지 않아 아이콘이 기본 아이콘으로 누락되는 문제가 발생함. 시작프로그램 또한 따옴표 없는 공백 경로, rundll32 인자, 대소문자 `.exe` 미매칭 등으로 파일 경로 파싱이 깨짐.
+- **방지 및 해결 원칙**:
+  1. **추출 엔진**: `PrivateExtractIconsW` (User32)를 1순위로 사용하여 16x16 네이티브 크기 및 양수/음수 리소스 ID를 안전 추출하고, `SHGetFileInfoW`와 `ExtractIconExW`를 보조 안전망으로 둘 것.
+  2. **프로그램 4단계 스마트 Fallback**: `DisplayIcon` 정규화 파싱 ➡️ `installLocation` 폴더 내 메인 실행파일(`.exe`/`.ico`) 자동 탐색 ➡️ Windows 공용/사용자 시작 메뉴(`.lnk`) 바로가기 역추적 ➡️ `uninstallString` 내 실행파일 추출.
+  3. **시작프로그램 ImageList 안전 관리**: ImageList 0번에 시스템 기본 실행 아이콘(`IDI_APPLICATION`)을 등록하고 실패 항목에도 기본 인덱스를 할당하여 리스트뷰 아이콘 밀림/누락 버그를 원천 방지할 것.
 
 ---
 

@@ -5,6 +5,7 @@
 #include "FatRecovery.h"
 #include "RegistryMgr.h"
 #include "SystemCleaner.h"
+#include "StartupMgr.h"
 #include <windowsx.h>
 #include <shobjidl.h>
 #include <thread>
@@ -12,6 +13,12 @@
 #include <algorithm>
 #include <chrono>
 #include <shellapi.h>
+#include <filesystem>
+#include <sstream>
+#include <shlwapi.h>
+#pragma comment(lib, "shlwapi.lib")
+
+namespace fs = std::filesystem;
 
 static void ShowExplorerContextMenu(HWND hWnd, const std::wstring& path, POINT pt) {
     ITEMIDLIST* pidl = nullptr;
@@ -560,6 +567,252 @@ int CALLBACK MainWindow::ListViewCompareProc(LPARAM lParam1, LPARAM lParam2, LPA
     return pThis->m_sortAscending ? result : -result;
 }
 
+namespace {
+    std::wstring TrimSpacesAndQuotes(const std::wstring& str) {
+        if (str.empty()) return L"";
+        size_t first = 0;
+        while (first < str.size() && (iswspace(str[first]) || str[first] == L'"')) {
+            first++;
+        }
+        size_t last = str.size();
+        while (last > first && (iswspace(str[last - 1]) || str[last - 1] == L'"')) {
+            last--;
+        }
+        return str.substr(first, last - first);
+    }
+
+    std::wstring ExpandEnv(const std::wstring& str) {
+        if (str.empty()) return L"";
+        wchar_t expanded[MAX_PATH * 2] = { 0 };
+        DWORD len = ExpandEnvironmentStringsW(str.c_str(), expanded, ARRAYSIZE(expanded));
+        return (len > 0 && len < ARRAYSIZE(expanded)) ? expanded : str;
+    }
+
+    HICON ExtractIconFromSpec(const std::wstring& rawSpec) {
+        if (rawSpec.empty()) return NULL;
+
+        std::wstring spec = rawSpec;
+        while (!spec.empty() && iswspace(spec.front())) spec.erase(spec.begin());
+        while (!spec.empty() && iswspace(spec.back())) spec.pop_back();
+        if (spec.empty()) return NULL;
+
+        int iconIndex = 0;
+        std::wstring cleanPath = spec;
+
+        // 전체가 따옴표로 감싸진 경우 제거
+        if (cleanPath.size() >= 2 && cleanPath.front() == L'"' && cleanPath.back() == L'"') {
+            cleanPath = cleanPath.substr(1, cleanPath.size() - 2);
+        }
+
+        // 쉼표 뒤 인덱스 분리
+        size_t commaPos = cleanPath.find_last_of(L',');
+        if (commaPos != std::wstring::npos) {
+            std::wstring idxPart = cleanPath.substr(commaPos + 1);
+            while (!idxPart.empty() && (iswspace(idxPart.front()) || idxPart.front() == L'"')) idxPart.erase(idxPart.begin());
+            while (!idxPart.empty() && (iswspace(idxPart.back()) || idxPart.back() == L'"')) idxPart.pop_back();
+
+            bool isNum = !idxPart.empty();
+            for (size_t i = 0; i < idxPart.size(); ++i) {
+                if (i == 0 && idxPart[i] == L'-') continue;
+                if (!iswdigit(idxPart[i])) { isNum = false; break; }
+            }
+
+            if (isNum) {
+                iconIndex = _wtoi(idxPart.c_str());
+                cleanPath = cleanPath.substr(0, commaPos);
+            }
+        }
+
+        cleanPath = TrimSpacesAndQuotes(cleanPath);
+        cleanPath = ExpandEnv(cleanPath);
+        if (cleanPath.empty()) return NULL;
+
+        HICON hIcon = NULL;
+        // 1. PrivateExtractIconsW (16x16)
+        UINT uExtracted = PrivateExtractIconsW(cleanPath.c_str(), iconIndex, 16, 16, &hIcon, NULL, 1, LR_LOADFROMFILE);
+        if (uExtracted > 0 && hIcon != NULL) {
+            return hIcon;
+        }
+
+        // 2. ExtractIconExW
+        if (ExtractIconExW(cleanPath.c_str(), iconIndex, NULL, &hIcon, 1) > 0 && hIcon != NULL) {
+            return hIcon;
+        }
+
+        // 3. SHGetFileInfoW
+        SHFILEINFOW sfi = { 0 };
+        if (SHGetFileInfoW(cleanPath.c_str(), 0, &sfi, sizeof(sfi), SHGFI_ICON | SHGFI_SMALLICON) && sfi.hIcon != NULL) {
+            return sfi.hIcon;
+        }
+
+        // 4. .ico 파일 직접 로드
+        std::wstring lowerPath = cleanPath;
+        std::transform(lowerPath.begin(), lowerPath.end(), lowerPath.begin(), ::towlower);
+        if (lowerPath.size() >= 4 && lowerPath.substr(lowerPath.size() - 4) == L".ico") {
+            hIcon = (HICON)LoadImageW(NULL, cleanPath.c_str(), IMAGE_ICON, 16, 16, LR_LOADFROMFILE);
+            if (hIcon) return hIcon;
+        }
+
+        return NULL;
+    }
+
+    HICON FindDirectoryIconForProgram(const std::wstring& installDir, const std::wstring& displayName) {
+        if (installDir.empty()) return NULL;
+
+        std::wstring dir = ExpandEnv(installDir);
+        dir = TrimSpacesAndQuotes(dir);
+
+        std::error_code ec;
+        if (!fs::exists(dir, ec) || !fs::is_directory(dir, ec)) return NULL;
+
+        std::wstring lowerName = displayName;
+        std::transform(lowerName.begin(), lowerName.end(), lowerName.begin(), ::towlower);
+        size_t bitPos = lowerName.find(L" 64-bit");
+        if (bitPos != std::wstring::npos) lowerName = lowerName.substr(0, bitPos);
+        bitPos = lowerName.find(L" (x64)");
+        if (bitPos != std::wstring::npos) lowerName = lowerName.substr(0, bitPos);
+
+        std::wstring bestExe = L"";
+        std::wstring fallbackExe = L"";
+        std::wstring bestIco = L"";
+
+        for (const auto& entry : fs::directory_iterator(dir, fs::directory_options::skip_permission_denied, ec)) {
+            if (ec) break;
+            if (!entry.is_regular_file(ec)) continue;
+
+            std::wstring filename = entry.path().filename().wstring();
+            std::wstring fnLower = filename;
+            std::transform(fnLower.begin(), fnLower.end(), fnLower.begin(), ::towlower);
+
+            size_t subLen = (lowerName.size() < 4) ? lowerName.size() : 4;
+            if (fnLower.size() > 4 && fnLower.substr(fnLower.size() - 4) == L".ico") {
+                if (bestIco.empty()) bestIco = entry.path().wstring();
+                if (!lowerName.empty() && fnLower.find(lowerName.substr(0, subLen)) != std::wstring::npos) {
+                    bestIco = entry.path().wstring();
+                }
+            } else if (fnLower.size() > 4 && fnLower.substr(fnLower.size() - 4) == L".exe") {
+                if (fnLower.find(L"unins") != std::wstring::npos ||
+                    fnLower.find(L"update") != std::wstring::npos ||
+                    fnLower.find(L"crash") != std::wstring::npos ||
+                    fnLower.find(L"setup") != std::wstring::npos ||
+                    fnLower.find(L"helper") != std::wstring::npos) {
+                    continue;
+                }
+
+                if (fallbackExe.empty()) fallbackExe = entry.path().wstring();
+
+                if (!lowerName.empty() && fnLower.find(lowerName.substr(0, subLen)) != std::wstring::npos) {
+                    bestExe = entry.path().wstring();
+                    break;
+                }
+            }
+        }
+
+        if (!bestIco.empty()) {
+            HICON hIcon = (HICON)LoadImageW(NULL, bestIco.c_str(), IMAGE_ICON, 16, 16, LR_LOADFROMFILE);
+            if (hIcon) return hIcon;
+        }
+
+        std::wstring targetExe = !bestExe.empty() ? bestExe : fallbackExe;
+        if (!targetExe.empty()) {
+            return ExtractIconFromSpec(targetExe);
+        }
+
+        return NULL;
+    }
+
+    HICON FindStartMenuIconForProgram(const std::wstring& displayName, const std::wstring& installLocation) {
+        if (displayName.empty()) return NULL;
+
+        int csidls[2] = { CSIDL_COMMON_PROGRAMS, CSIDL_PROGRAMS };
+        std::wstring lowerName = displayName;
+        std::transform(lowerName.begin(), lowerName.end(), lowerName.begin(), ::towlower);
+        size_t bitPos = lowerName.find(L" 64-bit");
+        if (bitPos != std::wstring::npos) lowerName = lowerName.substr(0, bitPos);
+        bitPos = lowerName.find(L" (x64)");
+        if (bitPos != std::wstring::npos) lowerName = lowerName.substr(0, bitPos);
+
+        std::wstring lowerInstall = installLocation;
+        std::transform(lowerInstall.begin(), lowerInstall.end(), lowerInstall.begin(), ::towlower);
+        if (!lowerInstall.empty() && (lowerInstall.back() == L'\\' || lowerInstall.back() == L'/')) {
+            lowerInstall.pop_back();
+        }
+
+        for (int csidl : csidls) {
+            wchar_t szPath[MAX_PATH];
+            if (FAILED(SHGetFolderPathW(NULL, csidl, NULL, 0, szPath))) continue;
+
+            std::error_code ec;
+            for (const auto& entry : fs::recursive_directory_iterator(szPath, fs::directory_options::skip_permission_denied, ec)) {
+                if (ec) break;
+                if (!entry.is_regular_file(ec)) continue;
+
+                std::wstring ext = entry.path().extension().wstring();
+                std::transform(ext.begin(), ext.end(), ext.begin(), ::towlower);
+                if (ext != L".lnk") continue;
+
+                std::wstring stem = entry.path().stem().wstring();
+                std::wstring stemLower = stem;
+                std::transform(stemLower.begin(), stemLower.end(), stemLower.begin(), ::towlower);
+
+                bool matched = false;
+                if (stemLower == lowerName || stemLower.find(lowerName) != std::wstring::npos || lowerName.find(stemLower) != std::wstring::npos) {
+                    matched = true;
+                }
+
+                if (!matched && !lowerInstall.empty()) {
+                    std::wstring target = StartupMgr::resolveShortcutTarget(entry.path().wstring());
+                    std::wstring targetLower = target;
+                    std::transform(targetLower.begin(), targetLower.end(), targetLower.begin(), ::towlower);
+                    if (!targetLower.empty() && targetLower.find(lowerInstall) == 0) {
+                        matched = true;
+                    }
+                }
+
+                if (matched) {
+                    SHFILEINFOW sfi = { 0 };
+                    if (SHGetFileInfoW(entry.path().c_str(), 0, &sfi, sizeof(sfi), SHGFI_ICON | SHGFI_SMALLICON) && sfi.hIcon != NULL) {
+                        return sfi.hIcon;
+                    }
+                }
+            }
+        }
+        return NULL;
+    }
+
+    HICON ExtractIconFromUninstallString(const std::wstring& uninstStr) {
+        if (uninstStr.empty()) return NULL;
+
+        std::wstring str = TrimSpacesAndQuotes(ExpandEnv(uninstStr));
+        std::wstring lowerStr = str;
+        std::transform(lowerStr.begin(), lowerStr.end(), lowerStr.begin(), ::towlower);
+
+        if (lowerStr.find(L"msiexec") != std::wstring::npos) return NULL;
+
+        std::wstring targetExe = L"";
+        if (str.front() == L'"') {
+            size_t nextQ = str.find(L'"', 1);
+            if (nextQ != std::wstring::npos) {
+                targetExe = str.substr(1, nextQ - 1);
+            }
+        } else {
+            size_t exePos = lowerStr.find(L".exe");
+            if (exePos != std::wstring::npos) {
+                targetExe = str.substr(0, exePos + 4);
+            }
+        }
+
+        if (!targetExe.empty()) {
+            targetExe = TrimSpacesAndQuotes(ExpandEnv(targetExe));
+            std::error_code ec;
+            if (fs::exists(targetExe, ec) && !fs::is_directory(targetExe, ec)) {
+                return ExtractIconFromSpec(targetExe);
+            }
+        }
+        return NULL;
+    }
+}
+
 void MainWindow::PopulateProgramsList(HWND hList) {
     ListView_DeleteAllItems(hList);
     m_programs = RegistryMgr::getInstalledPrograms();
@@ -569,43 +822,31 @@ void MainWindow::PopulateProgramsList(HWND hList) {
     int defaultIconIdx = ImageList_AddIcon(m_hProgImageList, hDefaultIcon);
 
     for (auto& prog : m_programs) {
+        HICON hIcon = NULL;
+
+        // 1. DisplayIcon에서 추출
         if (!prog.displayIcon.empty()) {
-            std::wstring iconPath = prog.displayIcon;
-            int iconIndex = 0;
-            
-            // Handle "path,index" format
-            size_t commaPos = iconPath.find_last_of(L',');
-            if (commaPos != std::wstring::npos) {
-                std::wstring idxStr = iconPath.substr(commaPos + 1);
-                bool isNum = true;
-                for(wchar_t c : idxStr) {
-                    if(!iswdigit(c) && c != L'-') { isNum = false; break; }
-                }
-                if (isNum && !idxStr.empty()) {
-                    iconIndex = _wtoi(idxStr.c_str());
-                    iconPath = iconPath.substr(0, commaPos);
-                }
-            }
-            
-            // Remove quotes if present
-            if (!iconPath.empty() && iconPath.front() == L'"' && iconPath.back() == L'"') {
-                iconPath = iconPath.substr(1, iconPath.length() - 2);
-            }
-            
-            HICON hIcon = NULL;
-            if (ExtractIconExW(iconPath.c_str(), iconIndex, NULL, &hIcon, 1) > 0 && hIcon != NULL) {
-                prog.iconIndex = ImageList_AddIcon(m_hProgImageList, hIcon);
-                DestroyIcon(hIcon);
-            } else {
-                // If extraction failed but path exists, try SHGetFileInfo
-                SHFILEINFOW sfi = {0};
-                if (SHGetFileInfoW(iconPath.c_str(), 0, &sfi, sizeof(sfi), SHGFI_ICON | SHGFI_SMALLICON)) {
-                    prog.iconIndex = ImageList_AddIcon(m_hProgImageList, sfi.hIcon);
-                    DestroyIcon(sfi.hIcon);
-                } else {
-                    prog.iconIndex = defaultIconIdx;
-                }
-            }
+            hIcon = ExtractIconFromSpec(prog.displayIcon);
+        }
+
+        // 2. Fallback: installLocation 디렉터리 내 검색
+        if (!hIcon && !prog.installLocation.empty()) {
+            hIcon = FindDirectoryIconForProgram(prog.installLocation, prog.displayName);
+        }
+
+        // 3. Fallback: 시작 메뉴 바로가기 검색
+        if (!hIcon) {
+            hIcon = FindStartMenuIconForProgram(prog.displayName, prog.installLocation);
+        }
+
+        // 4. Fallback: uninstallString에서 추출
+        if (!hIcon && !prog.uninstallString.empty()) {
+            hIcon = ExtractIconFromUninstallString(prog.uninstallString);
+        }
+
+        if (hIcon != NULL) {
+            prog.iconIndex = ImageList_AddIcon(m_hProgImageList, hIcon);
+            DestroyIcon(hIcon);
         } else {
             prog.iconIndex = defaultIconIdx;
         }
@@ -1812,35 +2053,120 @@ INT_PTR MainWindow::HandleStartupMessage(HWND hWnd, UINT message, WPARAM wParam,
     return (INT_PTR)FALSE;
 }
 
-static std::wstring ExtractExePath(const std::wstring& cmd) {
+static std::wstring ExtractStartupTarget(const StartupItem& item) {
+    if (item.isFolderShortcut) {
+        std::wstring target = StartupMgr::resolveShortcutTarget(item.shortcutPath);
+        if (!target.empty()) {
+            std::error_code ec;
+            if (fs::exists(target, ec)) {
+                return target;
+            }
+        }
+        return item.shortcutPath;
+    }
+
+    if (item.command.empty()) return L"";
+
+    std::wstring cmd = TrimSpacesAndQuotes(ExpandEnv(item.command));
     if (cmd.empty()) return L"";
-    if (cmd.front() == L'"') {
-        size_t pos = cmd.find(L'"', 1);
-        if (pos != std::wstring::npos) return cmd.substr(1, pos - 1);
+
+    std::wstring cmdLower = cmd;
+    std::transform(cmdLower.begin(), cmdLower.end(), cmdLower.begin(), ::towlower);
+
+    // rundll32.exe 처리
+    if (cmdLower.rfind(L"rundll32", 0) == 0) {
+        size_t firstSpace = cmd.find(L' ');
+        if (firstSpace != std::wstring::npos) {
+            std::wstring args = cmd.substr(firstSpace + 1);
+            while (!args.empty() && iswspace(args.front())) args.erase(args.begin());
+
+            std::wstring dllPath = L"";
+            if (!args.empty() && args.front() == L'\"') {
+                size_t closeQ = args.find(L'\"', 1);
+                if (closeQ != std::wstring::npos) {
+                    dllPath = args.substr(1, closeQ - 1);
+                }
+            } else {
+                size_t comma = args.find(L',');
+                size_t space = args.find(L' ');
+                size_t endPos = (comma != std::wstring::npos) ? comma : space;
+                dllPath = (endPos != std::wstring::npos) ? args.substr(0, endPos) : args;
+            }
+
+            if (!dllPath.empty()) {
+                dllPath = TrimSpacesAndQuotes(ExpandEnv(dllPath));
+                std::error_code ec;
+                if (fs::exists(dllPath, ec)) return dllPath;
+
+                wchar_t found[MAX_PATH] = { 0 };
+                if (SearchPathW(NULL, dllPath.c_str(), L".dll", MAX_PATH, found, NULL) > 0) {
+                    return found;
+                }
+            }
+        }
     }
-    size_t exePos = cmd.find(L".exe");
+
+    // 따옴표로 감싸진 경우
+    if (cmd.front() == L'\"') {
+        size_t closeQ = cmd.find(L'\"', 1);
+        if (closeQ != std::wstring::npos) {
+            std::wstring path = cmd.substr(1, closeQ - 1);
+            return ExpandEnv(path);
+        }
+    }
+
+    // 따옴표 없는 경우: 공백 단위로 토큰을 결합하며 실제 파일 존재 여부 확인
+    std::wstring candidate = L"";
+    std::wistringstream iss(cmd);
+    std::wstring token;
+    while (iss >> token) {
+        if (!candidate.empty()) candidate += L" ";
+        candidate += token;
+
+        std::error_code ec;
+        if (fs::exists(candidate, ec) && !fs::is_directory(candidate, ec)) {
+            return candidate;
+        }
+    }
+
+    // 대소문자 무관 .exe 확장자 위치 검사
+    size_t exePos = cmdLower.find(L".exe");
     if (exePos != std::wstring::npos) {
-        return cmd.substr(0, exePos + 4);
+        std::wstring path = cmd.substr(0, exePos + 4);
+        std::error_code ec;
+        if (fs::exists(path, ec)) return path;
     }
-    size_t spacePos = cmd.find(L' ');
-    if (spacePos != std::wstring::npos) {
-        return cmd.substr(0, spacePos);
+
+    // 첫 번째 토큰 SearchPathW 탐색
+    size_t firstSpace = cmd.find(L' ');
+    std::wstring firstToken = (firstSpace != std::wstring::npos) ? cmd.substr(0, firstSpace) : cmd;
+    wchar_t found[MAX_PATH] = { 0 };
+    if (SearchPathW(NULL, firstToken.c_str(), L".exe", MAX_PATH, found, NULL) > 0) {
+        return found;
     }
-    return cmd;
+
+    return firstToken;
 }
 
 void MainWindow::PopulateStartupList(HWND hList) {
     m_startupItems = StartupMgr::getStartupItems();
     if (m_hStartupImageList) ImageList_RemoveAll(m_hStartupImageList);
 
+    HICON hDefaultIcon = LoadIconW(NULL, IDI_APPLICATION);
+    int defaultIconIdx = ImageList_AddIcon(m_hStartupImageList, hDefaultIcon);
+
     for (auto& item : m_startupItems) {
-        std::wstring targetPath = item.isFolderShortcut ? item.shortcutPath : ExtractExePath(item.command);
+        std::wstring targetPath = ExtractStartupTarget(item);
+        HICON hIcon = NULL;
         if (!targetPath.empty()) {
-            SHFILEINFOW sfi = {0};
-            if (SHGetFileInfoW(targetPath.c_str(), 0, &sfi, sizeof(sfi), SHGFI_ICON | SHGFI_SMALLICON)) {
-                item.iconIndex = ImageList_AddIcon(m_hStartupImageList, sfi.hIcon);
-                DestroyIcon(sfi.hIcon);
-            }
+            hIcon = ExtractIconFromSpec(targetPath);
+        }
+
+        if (hIcon != NULL) {
+            item.iconIndex = ImageList_AddIcon(m_hStartupImageList, hIcon);
+            DestroyIcon(hIcon);
+        } else {
+            item.iconIndex = defaultIconIdx;
         }
     }
 
