@@ -105,3 +105,11 @@
 #define IDC_CHK_CFG_SYS_RECYCLEBIN      1112
 #define IDC_CHK_CFG_SYS_LOGS            1113
 
+// Standalone Shredder Dialog Controls
+#define IDD_SHRED_STANDALONE_DIALOG     210
+#define IDC_LBL_STANDALONE_TARGET       1120
+#define IDC_CMB_STANDALONE_PASSES       1121
+#define IDC_PROG_STANDALONE             1122
+#define IDC_LBL_STANDALONE_STATUS       1123
+#define IDC_BTN_STANDALONE_START        1124
+

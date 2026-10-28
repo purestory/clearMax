@@ -158,7 +158,7 @@ void MainWindow::Show() {
         } else if (!m_pendingAnalyzePath.empty()) {
             std::wstring* pPath = new std::wstring(m_pendingAnalyzePath);
             m_pendingAnalyzePath.clear();
-            TabCtrl_SetCurSel(m_hTabControl, 6);
+            TabCtrl_SetCurSel(m_hTabControl, 5);
             OnTabChanged();
             PostMessageW(m_hTabAnalyzer, WM_APP_ANALYZE_PATH, 0, (LPARAM)pPath);
         }
@@ -239,8 +239,10 @@ INT_PTR MainWindow::HandleMainMessage(HWND hWnd, UINT message, WPARAM wParam, LP
             } else if (pcds->dwData == 2) {
                 std::wstring* pPath = new std::wstring((const wchar_t*)pcds->lpData);
                 m_pendingAnalyzePath = *pPath;
-                TabCtrl_SetCurSel(m_hTabControl, 6); // Switch to analyzer tab
+                TabCtrl_SetCurSel(m_hTabControl, 5); // Switch to analyzer tab
                 OnTabChanged();
+                ShowWindow(hWnd, SW_RESTORE);
+                ForceForeground(hWnd);
                 PostMessageW(m_hTabAnalyzer, WM_APP_ANALYZE_PATH, 0, (LPARAM)pPath);
                 return (INT_PTR)TRUE;
             }
